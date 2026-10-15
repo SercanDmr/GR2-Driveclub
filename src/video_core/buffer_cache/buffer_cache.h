@@ -122,6 +122,9 @@ public:
     /// Mark region as modified from the GPU
     void MarkRegionAsGpuModified(VAddr addr, size_t size);
 
+    /// Records a GPU write of the range in the open batch.
+    void MarkGpuWrite(VAddr device_addr, u64 size);
+
     /// Synchronizes all buffers needed for DMA.
     void SynchronizeDmaBuffers();
 
@@ -165,8 +168,8 @@ private:
     struct Readback;
     using DownloadCopies = boost::container::small_vector<vk::BufferCopy, 1>;
 
-    /// Moves the GPU modified ranges of a span out of gpu_modified_ranges into copies from the
-    /// arena, packed from offset 0. Returns the packed size.
+    /// Moves the GPU written ranges of a span out of gpu_writes into copies from the arena,
+    /// packed from offset 0. Returns the packed size.
     u64 CollectDownloads(const Buffer* arena, VAddr device_addr, u64 size, DownloadCopies& copies);
 
     /// Downloads a request inside one readback window while the GPU thread keeps running.
@@ -207,7 +210,10 @@ private:
     StreamBuffer stream_buffer;
     Buffer gds_buffer;
     std::unique_ptr<Buffer> null_index_buffer;
-    RangeSet gpu_modified_ranges;
+    /// GPU written ranges with the scheduler tick of the batch holding the write; the newest
+    /// write of a byte sets its tick. Guarded by gpu_writes_mutex.
+    RangeMap<u64> gpu_writes;
+    std::mutex gpu_writes_mutex;
 
     std::unique_ptr<FaultManager> fault_manager;
     std::unique_ptr<Buffer> bda_pagetable_buffer;

@@ -147,7 +147,8 @@ void BufferCache::InvalidateMemory(VAddr device_addr, u64 size, bool assume_lock
 
 void BufferCache::UnmarkRegionAsGpuModified(VAddr device_addr, u64 size, bool is_write) {
     memory_tracker->UnmarkRegionAsGpuModified(device_addr, size, is_write);
-    gpu_modified_ranges.Subtract(device_addr, size);
+    std::scoped_lock lk{gpu_writes_mutex};
+    gpu_writes.Subtract(device_addr, size);
 }
 
 void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool async,
@@ -184,7 +185,7 @@ u64 BufferCache::CollectDownloads(const Buffer* arena, VAddr device_addr, u64 si
     u64 total_size_bytes = 0;
     const VAddr arena_base = arena->cpu_addr;
     memory_tracker->ForEachDownloadRange<false>(device_addr, size, [&](u64 address, u64 size) {
-        const auto add_download = [&](VAddr start, VAddr end) {
+        const auto add_download = [&](VAddr start, VAddr end, u64) {
             const u64 new_offset = start - arena_base;
             const u64 new_size = end - start;
             copies.push_back(vk::BufferCopy{
@@ -197,8 +198,9 @@ u64 BufferCache::CollectDownloads(const Buffer* arena, VAddr device_addr, u64 si
             constexpr u64 mask = ~(align - 1ULL);
             total_size_bytes += (new_size + align - 1) & mask;
         };
-        gpu_modified_ranges.ForEachInRange(address, size, add_download);
-        gpu_modified_ranges.Subtract(address, size);
+        std::scoped_lock lk{gpu_writes_mutex};
+        gpu_writes.ForEachInRange(address, size, add_download);
+        gpu_writes.Subtract(address, size);
     });
     return total_size_bytes;
 }
@@ -362,8 +364,10 @@ bool BufferCache::IsReadbackPending(VAddr addr, u64 size) const {
 }
 
 void BufferCache::MergeReadbackReturns() {
+    const u64 tick = scheduler.CurrentTick();
+    std::scoped_lock lk{gpu_writes_mutex};
     for (const auto& [addr, size] : readback_returns) {
-        gpu_modified_ranges.Add(addr, size);
+        gpu_writes.Set(addr, size, tick);
     }
     readback_returns.clear();
 }
@@ -390,11 +394,9 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
     EnsureResident(arena, first_block, last_block);
     if (is_written) {
         texture_cache.MarkAsMaybeGpuDirty(device_addr, size);
+        MarkGpuWrite(device_addr, size);
     }
     SynchronizeMemory(arena, device_addr, size, is_written, is_texel_buffer);
-    if (is_written) {
-        gpu_modified_ranges.Add(device_addr, size);
-    }
     return {arena, arena->Offset(device_addr)};
 }
 
@@ -455,8 +457,14 @@ bool BufferCache::IsRegionGpuModified(VAddr addr, size_t size) {
 
 void BufferCache::MarkRegionAsGpuModified(VAddr addr, size_t size) {
     texture_cache.MarkAsMaybeGpuDirty(addr, size);
+    MarkGpuWrite(addr, size);
     memory_tracker->MarkRegionAsGpuModified(addr, size);
-    gpu_modified_ranges.Add(addr, size);
+}
+
+void BufferCache::MarkGpuWrite(VAddr device_addr, u64 size) {
+    const u64 tick = scheduler.CurrentTick();
+    std::scoped_lock lk{gpu_writes_mutex};
+    gpu_writes.Set(device_addr, size, tick);
 }
 
 void BufferCache::ReadEdgeImagePages(const Image& image) {
@@ -478,7 +486,7 @@ void BufferCache::ReadEdgeImagePages(const Image& image) {
     boost::container::small_vector<vk::BufferCopy, 2> copies;
     u64 total_size_bytes = 0;
     const auto [buffer, offset] = ObtainBuffer(page_start, page_end - page_start);
-    const auto add_download = [&](VAddr start, VAddr end) {
+    const auto add_download = [&](VAddr start, VAddr end, u64) {
         const u64 new_offset = start - buffer->CpuAddr();
         const u64 new_size = end - start;
         copies.push_back(vk::BufferCopy{
@@ -491,9 +499,12 @@ void BufferCache::ReadEdgeImagePages(const Image& image) {
         constexpr u64 mask = ~(align - 1ULL);
         total_size_bytes += (new_size + align - 1) & mask;
     };
-    gpu_modified_ranges.ForEachInRange(page_start, image_addr - page_start, add_download);
-    gpu_modified_ranges.ForEachInRange(image_end, page_end - image_end, add_download);
-    gpu_modified_ranges.Subtract(page_start, page_end - page_start);
+    {
+        std::scoped_lock lk{gpu_writes_mutex};
+        gpu_writes.ForEachInRange(page_start, image_addr - page_start, add_download);
+        gpu_writes.ForEachInRange(image_end, page_end - image_end, add_download);
+        gpu_writes.Subtract(page_start, page_end - page_start);
+    }
     if (total_size_bytes == 0) {
         return;
     }
