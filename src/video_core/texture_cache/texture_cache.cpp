@@ -377,13 +377,31 @@ void TextureCache::InvalidateMemoryFromGPU(VAddr address, size_t max_size) {
     }
 }
 
+u64 TextureCache::HashGuestMemory(VAddr addr, u64 size) {
+    Core::MemoryManager::BackingSpan spans[8];
+    const u32 num_spans =
+        Core::Memory::Instance()->ResolveBackingSpans(addr, size, spans, 8, false);
+    if (num_spans == 0) {
+        return 0;
+    }
+    if (num_spans == 1) {
+        return XXH3_64bits(spans[0].ptr, size);
+    }
+    XXH3_state_t* const state = XXH3_createState();
+    XXH3_64bits_reset(state);
+    for (u32 i = 0; i < num_spans; ++i) {
+        XXH3_64bits_update(state, spans[i].ptr, spans[i].size);
+    }
+    const u64 hash = XXH3_64bits_digest(state);
+    XXH3_freeState(state);
+    return hash;
+}
+
 void TextureCache::MarkAsMaybeGpuDirty(VAddr addr, size_t size) {
     ForEachImageInRegion(addr, size, [&](ImageId image_id, Image& image) {
         if (image.gpu_hash == 0) {
-            // Read backing pages directly, without faulting through the guest readback path.
             // An unavailable baseline keeps the conservative GC behavior.
-            const u8* addr = std::bit_cast<u8*>(image.info.guest_address);
-            image.gpu_hash = XXH3_64bits(addr, image.info.guest_size);
+            image.gpu_hash = HashGuestMemory(image.info.guest_address, image.info.guest_size);
         }
         std::scoped_lock lk{image.mutex};
         image.flags |= ImageFlagBits::MaybeGpuDirty;
@@ -2071,9 +2089,8 @@ void TextureCache::GarbageCollectImages() {
 
         for (const auto& image_id : maybe_download) {
             const auto& image = slot_images[image_id];
-            const u8* addr = std::bit_cast<u8*>(image.info.guest_address);
-            const u64 hash = XXH3_64bits(addr, image.info.guest_size);
-            if (image.gpu_hash == hash) {
+            const u64 hash = HashGuestMemory(image.info.guest_address, image.info.guest_size);
+            if (hash != 0 && image.gpu_hash == hash) {
                 download_queue.push_back(image_id);
             } else {
                 DeleteImage(image_id);

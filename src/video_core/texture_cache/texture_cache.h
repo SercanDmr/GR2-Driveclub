@@ -467,6 +467,10 @@ private:
         }
     }
 
+    /// Hashes guest memory through the never-protected backing view, so GPU modified pages are
+    /// read without a readback. Returns 0 when part of the range has no backing.
+    u64 HashGuestMemory(VAddr addr, u64 size);
+
     /// Copies image memory back to CPU.
     void DownloadImageMemory(ImageId image_id,
                              DownloadMemoryFlags flags = DownloadMemoryFlags::None);
