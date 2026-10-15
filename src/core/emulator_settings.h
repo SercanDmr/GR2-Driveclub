@@ -484,9 +484,9 @@ struct GPUSettings {
     // Look at the CPU modified bits of a read-only bind before taking the tracker lock, and skip
     // the locked walk over them when none is set.
     Setting<bool> clean_sync_peek{true};
-    // The GPU command thread submits a readback download without waiting for it; the faulting
-    // thread waits and writes the bytes back. A GPU write marked in the window meanwhile keeps
-    // the window GPU modified for the next fault.
+    // The faulting thread performs its readback and the GPU command thread never waits for it:
+    // the copy of the window is submitted at once, the faulting thread waits for it and writes the
+    // bytes back, and a GPU write marked in the window meanwhile keeps its pages GPU modified.
     Setting<bool> readback_offload{false};
     // Flush the open graphics batch early when it already holds this many draws and every batch
     // submitted so far has retired (the ring runs dry while the rest of the batch is recorded).

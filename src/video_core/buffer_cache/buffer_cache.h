@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <condition_variable>
 #include <deque>
 #include <mutex>
@@ -125,9 +126,9 @@ public:
     /// Records a GPU write the packet being bound will perform.
     void MarkGpuWrite(VAddr device_addr, u64 size);
 
-    /// Stamps the writes marked since the last commit with the batch that holds their packet.
-    /// Called right after each draw, dispatch, fill or copy is recorded, and on every exit of a
-    /// packet whose record did not happen.
+    /// Stamps and marks the writes of the packet again when a flush moved it into the current
+    /// batch. Called right after each draw, dispatch, fill or copy is recorded, and on every exit
+    /// of a packet whose record did not happen.
     void CommitGpuWrites();
 
     /// Moves the writes of a packet still being bound into the batch this flush opens. Called from
@@ -150,6 +151,21 @@ public:
     FastPathStats DrainFastPathStats() {
         return std::exchange(fast_stats, {});
     }
+
+    /// readback_offload telemetry, reset on read.
+    struct OffloadStats {
+        u64 faults;
+        u64 copies;
+        u64 busy;
+        u64 empty;
+        u64 stale;
+        u64 orphans;
+        u64 waits;
+        u64 wait_ns;
+        u64 restamps;
+        u64 segments;
+    };
+    OffloadStats DrainOffloadStats();
 
 private:
     struct ArenaBinds {
@@ -181,22 +197,29 @@ private:
     /// packed from offset 0. Returns the packed size.
     u64 CollectDownloads(const Buffer* arena, VAddr device_addr, u64 size, DownloadCopies& copies);
 
-    /// Downloads a request inside one readback window while the GPU thread keeps running.
-    /// Returns false when the request has to take the synchronous download.
-    bool OffloadReadback(VAddr device_addr, u64 size, bool is_write);
+    /// Serves a fault from the thread that took it, inside one readback window, while the GPU
+    /// thread keeps running. Returns false when the request has to take the synchronous download.
+    bool FaultReadback(VAddr device_addr, u64 size, bool is_write);
 
-    /// Records and submits the download of a readback window. Runs on the GPU thread.
+    /// Records and submits the copy of the GPU written ranges of a readback window, which the
+    /// faulting thread then owns. Runs on the GPU thread.
     void RecordReadback(Readback& job);
 
-    /// Writes a signaled readback to guest memory and unmarks its window if no GPU write was
-    /// marked in it since the copy.
+    /// Writes a signaled readback to guest memory and consumes the writes it copied.
     void FinishReadback(const Readback& job);
 
-    /// True when a pending readback window overlaps the range. Requires readback_mutex.
-    bool IsReadbackPending(VAddr addr, u64 size) const;
+    /// Erases the GPU writes of the range that the GPU had completed at known_tick and clears the
+    /// pages left without one; a write marked since keeps its pages GPU modified.
+    void ConsumeGpuWrites(VAddr device_addr, u64 size, u64 known_tick);
 
-    /// Merges the vetoed readback ranges back into gpu_modified_ranges. Requires readback_mutex.
-    void MergeReadbackReturns();
+    /// One downloader owns a range at a time: a GPU thread download from its record to its
+    /// write-back, a faulting thread from the record of its copy to the consume.
+    void AcquireWindows(VAddr device_addr, u64 size);
+    bool TryAcquireWindows(VAddr device_addr, u64 size);
+    void ReleaseWindows(VAddr device_addr, u64 size);
+    void WaitWindowsFree(VAddr device_addr, u64 size);
+    /// Requires window_mutex.
+    bool WindowsOwned(VAddr device_addr, u64 size) const;
 
     void StampGpuWrite(VAddr device_addr, u64 size, u64 tick);
 
@@ -225,13 +248,13 @@ private:
     /// write of a byte sets its tick. Guarded by gpu_writes_mutex.
     RangeMap<u64> gpu_writes;
     std::mutex gpu_writes_mutex;
-    struct GpuWrite {
+    struct Range {
         VAddr addr;
         u64 size;
     };
-    /// Writes marked for the packet being bound, stamped with in_flight_tick.
-    boost::container::small_vector<GpuWrite, 8> in_flight;
-    u64 in_flight_tick{};
+    /// Writes marked for the packet being bound, and whether a flush moved them since.
+    boost::container::small_vector<Range, 8> in_flight;
+    bool in_flight_moved{};
 
     std::unique_ptr<FaultManager> fault_manager;
     std::unique_ptr<Buffer> bda_pagetable_buffer;
@@ -267,13 +290,19 @@ private:
     FastPathStats fast_stats{};
 
     bool readback_offload{};
-    std::mutex readback_mutex;
-    std::condition_variable readback_cv;
-    /// Readback windows with a submitted download that the faulting thread has yet to finish,
-    /// at most one per window.
-    std::vector<VAddr> pending_readbacks;
-    /// Ranges of vetoed readbacks, merged back into gpu_modified_ranges on the GPU thread.
-    std::vector<std::pair<VAddr, u64>> readback_returns;
+    std::mutex window_mutex;
+    std::condition_variable window_cv;
+    boost::container::small_vector<Range, 8> window_owners;
+    /// Bumped from the faulting threads and the GPU thread alike.
+    std::atomic<u64> offload_faults{};
+    std::atomic<u64> offload_copies{};
+    std::atomic<u64> offload_busy{};
+    std::atomic<u64> offload_empty{};
+    std::atomic<u64> offload_stale{};
+    std::atomic<u64> offload_orphans{};
+    std::atomic<u64> offload_waits{};
+    std::atomic<u64> offload_wait_ns{};
+    std::atomic<u64> offload_restamps{};
 };
 
 } // namespace VideoCore

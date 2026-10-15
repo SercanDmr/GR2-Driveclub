@@ -3,7 +3,6 @@
 
 #pragma once
 
-#include <numeric>
 #include <utility>
 
 #include "common/adaptive_mutex.h"
@@ -95,8 +94,7 @@ class RegionManager {
 public:
     explicit RegionManager(PageManager* tracker_, VAddr cpu_addr_)
         : tracker{tracker_}, cpu_addr{cpu_addr_},
-          readbacks_mode{EmulatorSettings.GetReadbacksMode()},
-          readback_offload{EmulatorSettings.IsReadbackOffload()} {
+          readbacks_mode{EmulatorSettings.GetReadbacksMode()} {
         cpu.Fill(true);
         gpu.Fill(false);
     }
@@ -180,6 +178,33 @@ public:
         }
     }
 
+    /// ChangeRegionState over the pages a word mask selects, under the lock the caller holds.
+    template <StateOp cpu_op, StateOp gpu_op>
+    void ChangeRegionStateMasked(const std::array<u64, NUM_REGION_WORDS>& pages) {
+        bool update_watchers{};
+        RegionBits write_prot;
+        RegionBits read_prot;
+        Bounds watcher_bounds = MIN_BOUNDS;
+        for (u64 index = 0; index < NUM_REGION_WORDS; ++index) {
+            if (pages[index] != 0) {
+                update_watchers |= UpdateProtection<cpu_op, gpu_op>(
+                    write_prot, read_prot, watcher_bounds, index, pages[index]);
+            }
+        }
+        const auto write_op = GetPageOp<Type::CPU>(cpu_op);
+        const auto read_op = GetPageOp<Type::GPU>(gpu_op);
+        update_watchers &= write_op != PageOp::None || read_op != PageOp::None;
+        if (update_watchers) {
+            tracker->UpdatePageWatchersForRegion(cpu_addr, watcher_bounds, write_prot, read_prot,
+                                                 write_op, read_op);
+        }
+        for (u64 index = 0; index < NUM_REGION_WORDS; ++index) {
+            if (pages[index] != 0) {
+                UpdateState<cpu_op, gpu_op>(index, pages[index]);
+            }
+        }
+    }
+
     template <Type type, StateOp cpu_op, StateOp gpu_op, bool locked = true>
     void ForEachModifiedRange(u64 offset, s64 size, auto&& func) {
         auto bounds = GetBounds(offset, size);
@@ -251,14 +276,6 @@ public:
         }
     }
 
-    /// Sums the GPU write sequences of the words covering a range. Each sequence only grows, so
-    /// the sum changes whenever a GPU write is marked in the range.
-    u64 GpuWriteSeq(u64 offset, u64 size) const noexcept {
-        const auto bounds = GetBounds(offset, size);
-        return std::accumulate(gpu_write_seq.begin() + bounds.start_word,
-                               gpu_write_seq.begin() + bounds.end_word + 1, u64{0});
-    }
-
     void Lock(const Bounds& bounds) noexcept {
         mutex.lock();
     }
@@ -321,9 +338,6 @@ private:
         }
         if constexpr (gpu_op != StateOp::None) {
             gpu[index] = Apply<gpu_op>(gpu[index], mask);
-            if constexpr (gpu_op == StateOp::Set) {
-                ++gpu_write_seq[index];
-            }
             gpu.set_summary =
                 gpu[index] ? (gpu.set_summary | summary_bit) : (gpu.set_summary & ~summary_bit);
             gpu.clear_summary = gpu[index] != ~u64{0} ? (gpu.clear_summary | summary_bit)
@@ -372,9 +386,7 @@ private:
         if constexpr (iter_type == Type::GPU) {
             return any_set(gpu);
         } else if constexpr (gpu_op == StateOp::Set) {
-            // With readback_offload a mark of pages already GPU modified still advances
-            // gpu_write_seq, so it is never skipped.
-            return readback_offload || any_clear(gpu);
+            return any_clear(gpu);
         } else if constexpr (gpu_op == StateOp::Clear) {
             return any_set(gpu);
         } else {
@@ -414,11 +426,8 @@ private:
     PageManager* tracker;
     VAddr cpu_addr{};
     u32 readbacks_mode;
-    bool readback_offload{};
     RegionBits cpu;
     RegionBits gpu;
-    /// Advanced by every GPU mark of a word, including marks of pages already GPU modified.
-    std::array<u64, NUM_REGION_WORDS> gpu_write_seq{};
     RegionLock mutex;
 };
 

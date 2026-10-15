@@ -1085,6 +1085,13 @@ void Rasterizer::EmitSkipcacheTelemetry(Skipcache::Framework& skipcache) {
              ws[0].count, ms(ws[0].ns), ws[1].count, ms(ws[1].ns), ws[2].count, ms(ws[2].ns),
              ws[3].count, ms(ws[3].ns), ws[4].count, ms(ws[4].ns));
     ws = {};
+    if (const auto os = buffer_cache.DrainOffloadStats(); os.faults || os.copies || os.restamps) {
+        LOG_INFO(Render_Skipcache,
+                 "[SkipCache] OFFLOAD faults={} copies={} busy={} empty={} stale={} orphans={} "
+                 "waited={}/{}ms restamps={} segments={} per300f",
+                 os.faults, os.copies, os.busy, os.empty, os.stale, os.orphans, os.waits,
+                 os.wait_ns / 1000000, os.restamps, os.segments);
+    }
     if (tracker_lock_spin_) {
         const auto tl = VideoCore::RegionLock::Drain();
         LOG_INFO(Render_Skipcache,

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <chrono>
 #include <magic_enum/magic_enum.hpp>
 #include <xxhash.h>
 
@@ -153,7 +154,7 @@ void BufferCache::UnmarkRegionAsGpuModified(VAddr device_addr, u64 size, bool is
 
 void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool async,
                              bool assume_locks) {
-    if (readback_offload && !assume_locks && OffloadReadback(device_addr, size, is_write)) {
+    if (readback_offload && !assume_locks && FaultReadback(device_addr, size, is_write)) {
         return;
     }
     const auto flush_request = [this, device_addr, size, is_write, async] {
@@ -200,22 +201,34 @@ u64 BufferCache::CollectDownloads(const Buffer* arena, VAddr device_addr, u64 si
         };
         std::scoped_lock lk{gpu_writes_mutex};
         gpu_writes.ForEachInRange(address, size, add_download);
-        gpu_writes.Subtract(address, size);
     });
     return total_size_bytes;
 }
 
 void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 size, bool async) {
-    if (readback_offload) {
-        // A pending readback owns the GPU modified pages of its window until it finishes.
-        std::unique_lock lk{readback_mutex};
-        readback_cv.wait(lk, [&] { return !IsReadbackPending(device_addr, size); });
-        MergeReadbackReturns();
+    // A deferred write-back runs on this thread, so an async download waits for the window
+    // instead of owning it across the wait; no faulting thread takes a window while this thread
+    // is busy.
+    const bool own_window = readback_offload && !async;
+    if (own_window) {
+        AcquireWindows(device_addr, size);
+    } else if (readback_offload) {
+        WaitWindowsFree(device_addr, size);
     }
     DownloadCopies copies;
     const VAddr arena_base = arena->cpu_addr;
     const u64 total_size_bytes = CollectDownloads(arena, device_addr, size, copies);
     if (total_size_bytes == 0) {
+        // A page GPU modified without a GPU write to copy would fault forever.
+        if (memory_tracker->IsRegionGpuModified(device_addr, size)) {
+            LOG_WARNING(Render_Vulkan, "GPU modified pages without a GPU write at {:#x}",
+                        device_addr);
+            offload_orphans.fetch_add(1, std::memory_order_relaxed);
+            memory_tracker->UnmarkRegionAsGpuModified(device_addr, size, false);
+        }
+        if (own_window) {
+            ReleaseWindows(device_addr, size);
+        }
         return;
     }
     const auto download =
@@ -224,9 +237,10 @@ void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 siz
         copy.dstOffset += download.offset;
     }
     runtime.CopyBuffer(arena, download.buffer, copies);
+    const u64 record_tick = scheduler.CurrentTick();
 
-    const auto write_data = [this, arena_base, device_addr, size, download, async,
-                             copies = std::move(copies)] {
+    const auto write_data = [this, arena_base, device_addr, size, download, async, own_window,
+                             record_tick, copies = std::move(copies)] {
         download.Invalidate();
         for (const auto& copy : copies) {
             auto* dst_addr = std::bit_cast<u8*>(arena_base + copy.srcOffset);
@@ -234,7 +248,12 @@ void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 siz
                                     copy.size);
         }
         Skipcache::Framework::Instance().BumpMemGen();
-        memory_tracker->UnmarkRegionAsGpuModified(device_addr, size, false);
+        // After the synchronous wait every write the copy found has executed, including the
+        // writes of a packet still being bound, which the commit after its record marks again.
+        ConsumeGpuWrites(device_addr, size, async ? record_tick : scheduler.CurrentTick());
+        if (own_window) {
+            ReleaseWindows(device_addr, size);
+        }
         if (async) {
             staging_pool.FreeDeferred(download);
         }
@@ -248,17 +267,94 @@ void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 siz
     }
 }
 
+void BufferCache::ConsumeGpuWrites(VAddr device_addr, u64 size, u64 known_tick) {
+    // The pages are cleared whole, so the writes are erased whole as well.
+    const VAddr page_start = Common::AlignDown(device_addr, BYTES_PER_PAGE);
+    const VAddr page_end = Common::AlignUp(device_addr + size, BYTES_PER_PAGE);
+    memory_tracker->ForEachRegionLocked(
+        page_start, page_end - page_start,
+        [&](RegionManager* manager, VAddr region_base, VAddr start, u64 len) {
+            std::array<u64, NUM_REGION_WORDS> consumed{};
+            std::array<u64, NUM_REGION_WORDS> kept{};
+            const auto mark_pages = [&](std::array<u64, NUM_REGION_WORDS>& pages, VAddr begin,
+                                        VAddr end) {
+                const u64 last_page = (end - 1 - region_base) / BYTES_PER_PAGE;
+                for (u64 page = (begin - region_base) / BYTES_PER_PAGE; page <= last_page; ++page) {
+                    pages[page / PAGES_PER_WORD] |= u64{1} << (page % PAGES_PER_WORD);
+                }
+            };
+            boost::container::small_vector<Range, 32> erased;
+            // The map lock stays held through the clear: a write marked meanwhile either shows
+            // up here with a newer tick and keeps its pages, or finds the pages clear afterwards
+            // and sets them again.
+            std::scoped_lock lk{gpu_writes_mutex};
+            gpu_writes.ForEachInRange(start, len, [&](VAddr begin, VAddr end, u64 tick) {
+                if (tick <= known_tick) {
+                    mark_pages(consumed, begin, end);
+                    erased.push_back({begin, end - begin});
+                } else {
+                    mark_pages(kept, begin, end);
+                    offload_stale.fetch_add(1, std::memory_order_relaxed);
+                }
+            });
+            for (const auto& [addr, erased_size] : erased) {
+                gpu_writes.Subtract(addr, erased_size);
+            }
+            for (u64 index = 0; index < NUM_REGION_WORDS; ++index) {
+                consumed[index] &= ~kept[index];
+            }
+            manager->ChangeRegionStateMasked<StateOp::None, StateOp::Clear>(consumed);
+        });
+}
+
+bool BufferCache::WindowsOwned(VAddr device_addr, u64 size) const {
+    return std::ranges::any_of(window_owners, [&](const Range& owner) {
+        return owner.addr < device_addr + size && device_addr < owner.addr + owner.size;
+    });
+}
+
+void BufferCache::AcquireWindows(VAddr device_addr, u64 size) {
+    std::unique_lock lk{window_mutex};
+    window_cv.wait(lk, [&] { return !WindowsOwned(device_addr, size); });
+    window_owners.push_back({device_addr, size});
+}
+
+bool BufferCache::TryAcquireWindows(VAddr device_addr, u64 size) {
+    std::scoped_lock lk{window_mutex};
+    if (WindowsOwned(device_addr, size)) {
+        return false;
+    }
+    window_owners.push_back({device_addr, size});
+    return true;
+}
+
+void BufferCache::ReleaseWindows(VAddr device_addr, u64 size) {
+    {
+        std::scoped_lock lk{window_mutex};
+        const auto it = std::ranges::find_if(window_owners, [&](const Range& owner) {
+            return owner.addr == device_addr && owner.size == size;
+        });
+        ASSERT(it != window_owners.end());
+        window_owners.erase(it);
+    }
+    window_cv.notify_all();
+}
+
+void BufferCache::WaitWindowsFree(VAddr device_addr, u64 size) {
+    std::unique_lock lk{window_mutex};
+    window_cv.wait(lk, [&] { return !WindowsOwned(device_addr, size); });
+}
+
 struct BufferCache::Readback {
     VAddr window{};
     DownloadCopies copies{};
     Vulkan::StagingBufferRef staging{};
     VAddr arena_base{};
-    u64 write_seq{};
     u64 tick{};
     bool busy{};
 };
 
-bool BufferCache::OffloadReadback(VAddr device_addr, u64 size, bool is_write) {
+bool BufferCache::FaultReadback(VAddr device_addr, u64 size, bool is_write) {
     const VAddr window = Common::AlignDown(device_addr, READBACK_WINDOW_SIZE);
     if (device_addr + size > window + READBACK_WINDOW_SIZE) {
         return false;
@@ -272,19 +368,28 @@ bool BufferCache::OffloadReadback(VAddr device_addr, u64 size, bool is_write) {
     SCOPE_EXIT {
         Libraries::Kernel::posix_pthread_sigmask(POSIX_SIG_SETMASK, &old_sigmask, nullptr);
     };
-    // A request still GPU modified after two rounds of its own takes the synchronous download,
+    offload_faults.fetch_add(1, std::memory_order_relaxed);
+    // A request still GPU modified after two readbacks of its own takes the synchronous download,
     // which copies and unmarks in one GPU thread command.
     u32 attempts = 0;
     while (attempts < 2) {
         Readback job{.window = window};
         liverpool->SendCommand<true>([this, &job] { RecordReadback(job); });
         if (job.busy) {
-            std::unique_lock lk{readback_mutex};
-            readback_cv.wait(lk, [&] { return !IsReadbackPending(window, READBACK_WINDOW_SIZE); });
+            offload_busy.fetch_add(1, std::memory_order_relaxed);
+            WaitWindowsFree(window, READBACK_WINDOW_SIZE);
         } else {
             ++attempts;
-            if (!job.copies.empty()) {
+            if (job.copies.empty()) {
+                offload_empty.fetch_add(1, std::memory_order_relaxed);
+            } else {
+                const auto start = std::chrono::steady_clock::now();
                 scheduler.GetWorkSemaphore()->Wait(job.tick);
+                const auto waited = std::chrono::steady_clock::now() - start;
+                offload_waits.fetch_add(1, std::memory_order_relaxed);
+                offload_wait_ns.fetch_add(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(waited).count(),
+                    std::memory_order_relaxed);
                 FinishReadback(job);
             }
         }
@@ -303,19 +408,16 @@ bool BufferCache::OffloadReadback(VAddr device_addr, u64 size, bool is_write) {
 }
 
 void BufferCache::RecordReadback(Readback& job) {
-    {
-        std::scoped_lock lk{readback_mutex};
-        if (IsReadbackPending(job.window, READBACK_WINDOW_SIZE)) {
-            job.busy = true;
-            return;
-        }
-        MergeReadbackReturns();
+    if (!TryAcquireWindows(job.window, READBACK_WINDOW_SIZE)) {
+        job.busy = true;
+        return;
     }
     const u64 block = job.window >> block_shift;
     const auto* arena = GetArena(block, block);
     const u64 total_size_bytes =
         CollectDownloads(arena, job.window, READBACK_WINDOW_SIZE, job.copies);
     if (total_size_bytes == 0) {
+        ReleaseWindows(job.window, READBACK_WINDOW_SIZE);
         return;
     }
     // Held until FinishReadback releases it; the pool reuses it once the GPU passes that release.
@@ -324,52 +426,45 @@ void BufferCache::RecordReadback(Readback& job) {
         copy.dstOffset += job.staging.offset;
     }
     job.arena_base = arena->cpu_addr;
-    job.write_seq = memory_tracker->GpuWriteSeq(job.window, READBACK_WINDOW_SIZE);
     runtime.CopyBuffer(arena, job.staging.buffer, job.copies);
     job.tick = scheduler.CurrentTick();
     scheduler.Flush();
-    std::scoped_lock lk{readback_mutex};
-    pending_readbacks.push_back(job.window);
+    offload_copies.fetch_add(1, std::memory_order_relaxed);
 }
 
 void BufferCache::FinishReadback(const Readback& job) {
     job.staging.Invalidate();
-    // The write-back runs ahead of the verdict: other downloads of the window wait while this one
-    // is pending, and a vetoed window stays GPU modified.
+    // The write-back runs ahead of the consume: the window is owned, so a write marked meanwhile
+    // keeps its pages GPU modified and the guest never reads them.
     for (const auto& copy : job.copies) {
         auto* dst_addr = std::bit_cast<u8*>(job.arena_base + copy.srcOffset);
         memory->TryWriteBacking(
             dst_addr, job.staging.mapped + (copy.dstOffset - job.staging.offset), copy.size);
     }
-    const bool unmarked = memory_tracker->TryUnmarkRegionAsGpuModified(
-        job.window, READBACK_WINDOW_SIZE, job.write_seq);
-    {
-        std::scoped_lock lk{readback_mutex};
-        if (!unmarked) {
-            for (const auto& copy : job.copies) {
-                readback_returns.emplace_back(job.arena_base + copy.srcOffset, copy.size);
-            }
-        }
-        std::erase(pending_readbacks, job.window);
-    }
-    readback_cv.notify_all();
+    ConsumeGpuWrites(job.window, READBACK_WINDOW_SIZE, job.tick);
+    ReleaseWindows(job.window, READBACK_WINDOW_SIZE);
     // The staging pool belongs to the GPU thread.
     liverpool->SendCommand([this, staging = job.staging] { staging_pool.FreeDeferred(staging); });
 }
 
-bool BufferCache::IsReadbackPending(VAddr addr, u64 size) const {
-    return std::ranges::any_of(pending_readbacks, [&](VAddr window) {
-        return window < addr + size && addr < window + READBACK_WINDOW_SIZE;
-    });
-}
-
-void BufferCache::MergeReadbackReturns() {
-    const u64 tick = scheduler.CurrentTick();
+BufferCache::OffloadStats BufferCache::DrainOffloadStats() {
+    const auto take = [](std::atomic<u64>& counter) {
+        return counter.exchange(0, std::memory_order_relaxed);
+    };
+    OffloadStats stats{
+        .faults = take(offload_faults),
+        .copies = take(offload_copies),
+        .busy = take(offload_busy),
+        .empty = take(offload_empty),
+        .stale = take(offload_stale),
+        .orphans = take(offload_orphans),
+        .waits = take(offload_waits),
+        .wait_ns = take(offload_wait_ns),
+        .restamps = take(offload_restamps),
+    };
     std::scoped_lock lk{gpu_writes_mutex};
-    for (const auto& [addr, size] : readback_returns) {
-        gpu_writes.Set(addr, size, tick);
-    }
-    readback_returns.clear();
+    stats.segments = gpu_writes.Size();
+    return stats;
 }
 
 std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 size,
@@ -468,11 +563,7 @@ void BufferCache::StampGpuWrite(VAddr device_addr, u64 size, u64 tick) {
 }
 
 void BufferCache::MarkGpuWrite(VAddr device_addr, u64 size) {
-    const u64 tick = scheduler.CurrentTick();
-    StampGpuWrite(device_addr, size, tick);
-    if (in_flight.empty()) {
-        in_flight_tick = tick;
-    }
+    StampGpuWrite(device_addr, size, scheduler.CurrentTick());
     in_flight.push_back({device_addr, size});
 }
 
@@ -480,12 +571,16 @@ void BufferCache::CommitGpuWrites() {
     if (in_flight.empty()) {
         return;
     }
-    // A flush between the binds and the record moved the packet into the current batch. The
-    // submit callback already stamps that; this catches a flush it did not see.
-    if (const u64 tick = scheduler.CurrentTick(); tick != in_flight_tick) {
+    // A flush between the binds and the record moved the packet into the current batch, and a
+    // synchronous download on this thread meanwhile consumed the writes it found: they are
+    // stamped and marked again.
+    if (in_flight_moved) {
+        const u64 tick = scheduler.CurrentTick();
         for (const auto& [addr, size] : in_flight) {
             StampGpuWrite(addr, size, tick);
+            memory_tracker->MarkRegionAsGpuModified(addr, size);
         }
+        in_flight_moved = false;
     }
     in_flight.clear();
 }
@@ -499,7 +594,8 @@ void BufferCache::MoveInFlightWrites() {
     for (const auto& [addr, size] : in_flight) {
         StampGpuWrite(addr, size, tick);
     }
-    in_flight_tick = tick;
+    in_flight_moved = true;
+    offload_restamps.fetch_add(1, std::memory_order_relaxed);
 }
 
 void BufferCache::ReadEdgeImagePages(const Image& image) {
@@ -512,11 +608,9 @@ void BufferCache::ReadEdgeImagePages(const Image& image) {
     const VAddr page_start = PageManager::GetPageAddr(image_addr);
     const VAddr page_end = PageManager::GetNextPageAddr(image_end - 1);
     if (readback_offload) {
-        // A pending readback of these pages writes guest memory and may return its ranges, so it
-        // finishes before the edges are collected and the image download writes the pages.
-        std::unique_lock lk{readback_mutex};
-        readback_cv.wait(lk, [&] { return !IsReadbackPending(page_start, page_end - page_start); });
-        MergeReadbackReturns();
+        // A readback in flight on these pages writes guest memory and consumes its writes before
+        // the edges are collected and the image download writes the pages.
+        WaitWindowsFree(page_start, page_end - page_start);
     }
     boost::container::small_vector<vk::BufferCopy, 2> copies;
     u64 total_size_bytes = 0;

@@ -73,25 +73,24 @@ public:
         });
     }
 
-    /// Returns a value that changes whenever a GPU write is marked in a range of one region.
-    u64 GpuWriteSeq(VAddr cpu_addr, u64 size) noexcept {
-        return top_tier[cpu_addr >> HIGHER_PAGE_BITS]->GpuWriteSeq(cpu_addr & HIGHER_PAGE_MASK,
-                                                                   size);
-    }
-
-    /// Unmarks a range of one region as GPU modified and returns true if no GPU write was marked
-    /// in it since GpuWriteSeq returned write_seq.
-    bool TryUnmarkRegionAsGpuModified(VAddr cpu_addr, u64 size, u64 write_seq) noexcept {
-        auto* manager = top_tier[cpu_addr >> HIGHER_PAGE_BITS];
-        const u64 offset = cpu_addr & HIGHER_PAGE_MASK;
-        const auto bounds = manager->GetBounds(offset, size);
-        manager->Lock(bounds);
-        const bool unwritten = manager->GpuWriteSeq(offset, size) == write_seq;
-        if (unwritten) {
-            manager->template ChangeRegionState<StateOp::None, StateOp::Clear, false>(offset, size);
+    /// Calls func(manager, region base address, range start, range size) for the part of the
+    /// range inside each existing region, with that region's lock held.
+    void ForEachRegionLocked(VAddr cpu_addr, u64 size, auto&& func) {
+        u64 page_index = cpu_addr >> HIGHER_PAGE_BITS;
+        u64 page_offset = cpu_addr & HIGHER_PAGE_MASK;
+        while (size > 0) {
+            const u64 amount = std::min(HIGHER_PAGE_SIZE - page_offset, size);
+            if (auto* manager = top_tier[page_index]; manager) {
+                const VAddr region_base = page_index << HIGHER_PAGE_BITS;
+                const auto bounds = manager->GetBounds(page_offset, amount);
+                manager->Lock(bounds);
+                func(manager, region_base, region_base + page_offset, amount);
+                manager->Unlock(bounds);
+            }
+            page_index++;
+            page_offset = 0;
+            size -= amount;
         }
-        manager->Unlock(bounds);
-        return unwritten;
     }
 
     /// Mark region as modified from the CPU
