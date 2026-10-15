@@ -709,26 +709,18 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
     if (flush_draw_interval_ != 0) {
         // The flush submits; it must not run under the guest-copy shared lock.
         copy_scope.reset();
-        MaybeIntervalFlush(false);
+        MaybeIntervalFlush();
     }
 }
 
-void Rasterizer::MaybeIntervalFlush(bool prone_write) {
-    if (prone_write) {
-        prone_run_ = true;
-        ++prone_run_draws_;
-    }
-    // The run is submitted once a draw that does not write a prone buffer
-    // ends it, or every 64 draws inside it; a flush the depth-clear guard
-    // refuses leaves the run pending for the next draw.
-    const bool force = prone_run_ && (!prone_write || prone_run_draws_ >= 64);
+void Rasterizer::MaybeIntervalFlush() {
     const u64 tick = scheduler.CurrentTick();
     if (tick != flush_tick_) {
         flush_tick_ = tick;
         draws_since_flush_ = 0;
     }
     bool drain = false;
-    if (!force && (flush_draw_interval_ == 0 || ++draws_since_flush_ < flush_draw_interval_)) {
+    if (flush_draw_interval_ == 0 || ++draws_since_flush_ < flush_draw_interval_) {
         // If the GPU has retired everything submitted so far it is recording
         // into an idle ring; hand it this much of the open batch now.
         if (ring_drain_flush_draws_ == 0 || draws_since_flush_ < ring_drain_flush_draws_ ||
@@ -766,11 +758,7 @@ void Rasterizer::MaybeIntervalFlush(bool prone_write) {
         drain_draw_max_ = std::max(drain_draw_max_, draws_since_flush_);
     }
     draws_since_flush_ = 0;
-    if (force) {
-        prone_run_ = false;
-        prone_run_draws_ = 0;
-        ++writer_flushes_;
-    } else if (!drain) {
+    if (!drain) {
         ++interval_flushes_;
     }
 }
@@ -947,7 +935,7 @@ void Rasterizer::DispatchDirect() {
     ResetBindings(true);
     if (flush_draw_interval_ != 0) {
         copy_scope.reset();
-        MaybeIntervalFlush(false);
+        MaybeIntervalFlush();
     }
 }
 
