@@ -167,7 +167,10 @@ void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool as
             std::max<VAddr>(Common::AlignDown(device_addr, READBACK_WINDOW_SIZE), arena->cpu_addr);
         const VAddr window_end = std::min<VAddr>(
             std::max<VAddr>(window_start + READBACK_WINDOW_SIZE, device_addr + size), arena_end);
-        DownloadMemory(arena, window_start, window_end - window_start, is_write, async);
+        DownloadMemory(arena, window_start, window_end - window_start, async);
+        if (is_write) {
+            memory_tracker->MarkRegionAsCpuModified(device_addr, size);
+        }
     };
     if (assume_locks) {
         flush_request();
@@ -200,8 +203,7 @@ u64 BufferCache::CollectDownloads(const Buffer* arena, VAddr device_addr, u64 si
     return total_size_bytes;
 }
 
-void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 size, bool is_write,
-                                 bool async) {
+void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 size, bool async) {
     if (readback_offload) {
         // A pending readback owns the GPU modified pages of its window until it finishes.
         std::unique_lock lk{readback_mutex};
@@ -221,7 +223,7 @@ void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 siz
     }
     runtime.CopyBuffer(arena, download.buffer, copies);
 
-    const auto write_data = [this, arena_base, device_addr, size, download, is_write, async,
+    const auto write_data = [this, arena_base, device_addr, size, download, async,
                              copies = std::move(copies)] {
         download.Invalidate();
         for (const auto& copy : copies) {
@@ -231,10 +233,6 @@ void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 siz
         }
         Skipcache::Framework::Instance().BumpMemGen();
         memory_tracker->UnmarkRegionAsGpuModified(device_addr, size, false);
-        if (is_write) {
-            memory_tracker->MarkRegionAsCpuModified(device_addr, size);
-        }
-
         if (async) {
             staging_pool.FreeDeferred(download);
         }

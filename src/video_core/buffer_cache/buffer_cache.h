@@ -160,8 +160,7 @@ private:
     /// True when every block in [first_block, last_block] has its residency bit set.
     bool AllResident(u64 first_block, u64 last_block) const;
 
-    void DownloadMemory(const Buffer* arena, VAddr device_addr, u64 size, bool is_write,
-                        bool async);
+    void DownloadMemory(const Buffer* arena, VAddr device_addr, u64 size, bool async);
 
     struct Readback;
     using DownloadCopies = boost::container::small_vector<vk::BufferCopy, 1>;
