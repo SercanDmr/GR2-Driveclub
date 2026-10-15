@@ -456,15 +456,50 @@ bool BufferCache::IsRegionGpuModified(VAddr addr, size_t size) {
 }
 
 void BufferCache::MarkRegionAsGpuModified(VAddr addr, size_t size) {
+    // The copy is recorded already, so its write belongs to the open batch.
     texture_cache.MarkAsMaybeGpuDirty(addr, size);
-    MarkGpuWrite(addr, size);
+    StampGpuWrite(addr, size, scheduler.CurrentTick());
     memory_tracker->MarkRegionAsGpuModified(addr, size);
+}
+
+void BufferCache::StampGpuWrite(VAddr device_addr, u64 size, u64 tick) {
+    std::scoped_lock lk{gpu_writes_mutex};
+    gpu_writes.Set(device_addr, size, tick);
 }
 
 void BufferCache::MarkGpuWrite(VAddr device_addr, u64 size) {
     const u64 tick = scheduler.CurrentTick();
-    std::scoped_lock lk{gpu_writes_mutex};
-    gpu_writes.Set(device_addr, size, tick);
+    StampGpuWrite(device_addr, size, tick);
+    if (in_flight.empty()) {
+        in_flight_tick = tick;
+    }
+    in_flight.push_back({device_addr, size});
+}
+
+void BufferCache::CommitGpuWrites() {
+    if (in_flight.empty()) {
+        return;
+    }
+    // A flush between the binds and the record moved the packet into the current batch. The
+    // submit callback already stamps that; this catches a flush it did not see.
+    if (const u64 tick = scheduler.CurrentTick(); tick != in_flight_tick) {
+        for (const auto& [addr, size] : in_flight) {
+            StampGpuWrite(addr, size, tick);
+        }
+    }
+    in_flight.clear();
+}
+
+void BufferCache::MoveInFlightWrites() {
+    if (in_flight.empty()) {
+        return;
+    }
+    // The submit took the batch the stamps name; the packet records into the one being opened.
+    const u64 tick = scheduler.CurrentTick();
+    for (const auto& [addr, size] : in_flight) {
+        StampGpuWrite(addr, size, tick);
+    }
+    in_flight_tick = tick;
 }
 
 void BufferCache::ReadEdgeImagePages(const Image& image) {

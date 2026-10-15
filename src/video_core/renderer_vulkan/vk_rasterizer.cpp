@@ -197,6 +197,7 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
 
     scheduler.SetSubmitCallback([this](Vulkan::SubmitInfo& info) {
         runtime.FlushBarriers();
+        buffer_cache.MoveInFlightWrites();
         buffer_cache.SubmitPendingArenaBinds(info);
     });
 }
@@ -572,6 +573,14 @@ void Rasterizer::EliminateFastClear() {
     ScopeMarkerEnd();
 }
 
+// Commits the GPU writes a packet marked while binding on every exit of the packet.
+struct GpuWriteCommit {
+    VideoCore::BufferCache& buffer_cache;
+    ~GpuWriteCommit() {
+        buffer_cache.CommitGpuWrites();
+    }
+};
+
 void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
     RENDERER_TRACE;
 
@@ -619,6 +628,7 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
         glue_entry_miss_ += glue_mode_ != 0 && !glue;
         rt_ok = PrepareRenderState(pipeline);
     }
+    GpuWriteCommit write_commit{buffer_cache};
     if (!BindResources(pipeline)) {
         return;
     }
@@ -693,6 +703,7 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
                     instance_offset);
     }
     DebugState.IncDrawCall();
+    buffer_cache.CommitGpuWrites();
 
     ResetBindings(false);
     if (flush_draw_interval_ != 0) {
@@ -827,6 +838,7 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
     // pipeline, so the glue is disarmed rather than re-certified here.
     glue_.armed = false;
     PrepareRenderState(pipeline);
+    GpuWriteCommit write_commit{buffer_cache};
     if (!BindResources(pipeline)) {
         return;
     }
@@ -884,6 +896,7 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
         }
         DebugState.IncDrawCall();
     }
+    buffer_cache.CommitGpuWrites();
 
     ResetBindings(false);
 }
@@ -912,6 +925,7 @@ void Rasterizer::DispatchDirect() {
         copy_scope.emplace(Core::Memory::Instance());
     }
 
+    GpuWriteCommit write_commit{buffer_cache};
     if (!BindResources(pipeline)) {
         return;
     }
@@ -928,6 +942,7 @@ void Rasterizer::DispatchDirect() {
     cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline->Handle());
     cmdbuf.dispatch(cs_program.dim_x, cs_program.dim_y, cs_program.dim_z);
     DebugState.IncDispatch();
+    buffer_cache.CommitGpuWrites();
 
     ResetBindings(true);
     if (flush_draw_interval_ != 0) {
@@ -950,6 +965,7 @@ void Rasterizer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
         ArmCopyHold();
     }
 
+    GpuWriteCommit write_commit{buffer_cache};
     if (!BindResources(pipeline)) {
         return;
     }
@@ -970,6 +986,7 @@ void Rasterizer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
     cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline->Handle());
     cmdbuf.dispatchIndirect(buffer->Handle(), base);
     DebugState.IncDispatch();
+    buffer_cache.CommitGpuWrites();
 
     ResetBindings(true);
 }
@@ -2973,6 +2990,7 @@ void Rasterizer::FillBuffer(VAddr address, u32 num_bytes, u32 value, bool is_gds
                                          VideoCore::ObtainBufferFlags::IsWritten);
     }();
     runtime.FillBuffer(buffer, offset, num_bytes, value);
+    buffer_cache.CommitGpuWrites();
 }
 
 void Rasterizer::CopyBuffer(VAddr dst, VAddr src, u32 num_bytes, bool dst_gds, bool src_gds) {
@@ -3009,6 +3027,7 @@ void Rasterizer::CopyBuffer(VAddr dst, VAddr src, u32 num_bytes, bool dst_gds, b
         .size = num_bytes,
     };
     runtime.CopyBuffer(src_buffer, dst_buffer, std::span{&copy, 1});
+    buffer_cache.CommitGpuWrites();
 }
 
 u32 Rasterizer::ReadDataFromGds(u32 gds_offset) {

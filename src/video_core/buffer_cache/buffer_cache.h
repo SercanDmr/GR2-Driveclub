@@ -122,8 +122,17 @@ public:
     /// Mark region as modified from the GPU
     void MarkRegionAsGpuModified(VAddr addr, size_t size);
 
-    /// Records a GPU write of the range in the open batch.
+    /// Records a GPU write the packet being bound will perform.
     void MarkGpuWrite(VAddr device_addr, u64 size);
+
+    /// Stamps the writes marked since the last commit with the batch that holds their packet.
+    /// Called right after each draw, dispatch, fill or copy is recorded, and on every exit of a
+    /// packet whose record did not happen.
+    void CommitGpuWrites();
+
+    /// Moves the writes of a packet still being bound into the batch this flush opens. Called from
+    /// the submit callback.
+    void MoveInFlightWrites();
 
     /// Synchronizes all buffers needed for DMA.
     void SynchronizeDmaBuffers();
@@ -189,6 +198,8 @@ private:
     /// Merges the vetoed readback ranges back into gpu_modified_ranges. Requires readback_mutex.
     void MergeReadbackReturns();
 
+    void StampGpuWrite(VAddr device_addr, u64 size, u64 tick);
+
     bool SynchronizeMemory(const Buffer* arena, VAddr device_addr, u32 size, bool is_written,
                            bool is_texel_buffer);
 
@@ -214,6 +225,13 @@ private:
     /// write of a byte sets its tick. Guarded by gpu_writes_mutex.
     RangeMap<u64> gpu_writes;
     std::mutex gpu_writes_mutex;
+    struct GpuWrite {
+        VAddr addr;
+        u64 size;
+    };
+    /// Writes marked for the packet being bound, stamped with in_flight_tick.
+    boost::container::small_vector<GpuWrite, 8> in_flight;
+    u64 in_flight_tick{};
 
     std::unique_ptr<FaultManager> fault_manager;
     std::unique_ptr<Buffer> bda_pagetable_buffer;
