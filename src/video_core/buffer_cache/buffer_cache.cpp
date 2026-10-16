@@ -750,11 +750,6 @@ void BufferCache::ReadEdgeImagePages(const Image& image) {
     const VAddr image_end = image_addr + image_size;
     const VAddr page_start = PageManager::GetPageAddr(image_addr);
     const VAddr page_end = PageManager::GetNextPageAddr(image_end - 1);
-    if (readback_offload) {
-        // A readback in flight on these pages writes guest memory and consumes its writes before
-        // the edges are collected and the image download writes the pages.
-        WaitWindowsFree(page_start, page_end - page_start);
-    }
     boost::container::small_vector<vk::BufferCopy, 2> copies;
     u64 total_size_bytes = 0;
     const auto [buffer, offset] = ObtainBuffer(page_start, page_end - page_start);

@@ -104,8 +104,15 @@ public:
     void ReadMemory(VAddr device_addr, u64 size, bool is_write = false, bool async = false,
                     bool assume_locks = false);
 
-    /// Flushes GPU modified ranges of the uncovered part of the edge pages of an image.
+    /// Flushes GPU modified ranges of the uncovered part of the edge pages of an image. The caller
+    /// owns the image's readback windows.
     void ReadEdgeImagePages(const Image& image);
+
+    /// One downloader owns a range at a time: a GPU thread download from its record to its
+    /// write-back, a faulting thread from its copy to the consume, the texture cache across an
+    /// image download. Acquiring waits for the current owners.
+    void AcquireWindows(VAddr device_addr, u64 size);
+    void ReleaseWindows(VAddr device_addr, u64 size);
 
     /// Finds a buffer for the specified region.
     [[nodiscard]] std::pair<const Buffer*, u64> ObtainBuffer(
@@ -228,11 +235,7 @@ private:
     /// pages left without one; a write marked since keeps its pages GPU modified.
     void ConsumeGpuWrites(VAddr device_addr, u64 size, u64 known_tick);
 
-    /// One downloader owns a range at a time: a GPU thread download from its record to its
-    /// write-back, a faulting thread from the record of its copy to the consume.
-    void AcquireWindows(VAddr device_addr, u64 size);
     bool TryAcquireWindows(VAddr device_addr, u64 size);
-    void ReleaseWindows(VAddr device_addr, u64 size);
     void WaitWindowsFree(VAddr device_addr, u64 size);
     /// Requires window_mutex.
     bool WindowsOwned(VAddr device_addr, u64 size) const;

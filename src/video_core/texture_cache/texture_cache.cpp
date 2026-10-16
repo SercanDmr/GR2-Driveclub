@@ -2098,6 +2098,27 @@ void TextureCache::GarbageCollectImages() {
         }
     }
 
+    // The images' readback windows are owned until their last write-back, so no faulting thread
+    // reads them back meanwhile; images that overlap in memory own one range.
+    boost::container::small_vector<std::pair<VAddr, VAddr>, 8> owned;
+    for (const auto& image_id : download_queue) {
+        const auto& info = slot_images[image_id].info;
+        owned.emplace_back(info.guest_address, info.guest_address + info.guest_size);
+    }
+    std::ranges::sort(owned);
+    size_t num_owned = 0;
+    for (const auto [start, end] : owned) {
+        if (num_owned != 0 && start <= owned[num_owned - 1].second) {
+            owned[num_owned - 1].second = std::max(owned[num_owned - 1].second, end);
+        } else {
+            owned[num_owned++] = {start, end};
+        }
+    }
+    owned.resize(num_owned);
+    for (const auto& [start, end] : owned) {
+        buffer_cache.AcquireWindows(start, end - start);
+    }
+
     for (const auto& image_id : download_queue) {
         buffer_cache.ReadEdgeImagePages(slot_images[image_id]);
     }
@@ -2113,6 +2134,9 @@ void TextureCache::GarbageCollectImages() {
         scheduler.DrainPendingOperations();
     }
 
+    for (const auto& [start, end] : owned) {
+        buffer_cache.ReleaseWindows(start, end - start);
+    }
     for (const auto& image_id : download_queue) {
         DeleteImage(image_id);
     }
