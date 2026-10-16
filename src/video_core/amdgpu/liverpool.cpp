@@ -362,6 +362,11 @@ void Liverpool::Process(std::stop_token stoken) {
             }
             task.resume();
 
+            if (!task.done() && rasterizer) {
+                // The parser yielded inside a wait whose label may depend on a guest thread that
+                // waits for a deferred readback request.
+                rasterizer->FlushRequested(true);
+            }
             if (task.done()) {
                 task.destroy();
 
