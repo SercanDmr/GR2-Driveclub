@@ -1083,10 +1083,8 @@ void Rasterizer::EmitSkipcacheTelemetry(Skipcache::Framework& skipcache) {
     }
     auto& ws = scheduler.WaitStats();
     LOG_INFO(Render_Skipcache,
-             "[SkipCache] WAITS finish={}/{}ms ring={}/{}ms fault={}/{}ms "
-             "dlbuf={}/{}ms dlimg={}/{}ms per300f",
-             ws[0].count, ms(ws[0].ns), ws[1].count, ms(ws[1].ns), ws[2].count, ms(ws[2].ns),
-             ws[3].count, ms(ws[3].ns), ws[4].count, ms(ws[4].ns));
+             "[SkipCache] WAITS finish={}/{}ms fault={}/{}ms dlimg={}/{}ms per300f", ws[0].count,
+             ms(ws[0].ns), ws[1].count, ms(ws[1].ns), ws[2].count, ms(ws[2].ns));
     ws = {};
     if (const auto os = buffer_cache.DrainOffloadStats(); os.faults || os.copies || os.restamps) {
         LOG_INFO(Render_Skipcache,

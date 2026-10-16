@@ -248,11 +248,6 @@ void Scheduler::EndSession() {
 
 void Scheduler::SubmitExecution(SubmitInfo& info) {
     std::scoped_lock lk{submit_mutex};
-    // Every submit of this scheduler runs on the GPU command thread, which is
-    // where the hook's state lives.
-    if (submit_hook_) {
-        submit_hook_(submit_hook_user_);
-    }
     // Every stream-lane byte this command buffer reads must be in place
     // before the queue submit.
     VideoCore::StreamCopyLane::Instance().DrainProducer();
