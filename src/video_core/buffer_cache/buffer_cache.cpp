@@ -205,6 +205,9 @@ void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool as
     if (readback_offload && !assume_locks && FaultReadback(device_addr, size, is_write)) {
         return;
     }
+    if (direct_read && assume_locks && !async && GpuThreadReadback(device_addr, size, is_write)) {
+        return;
+    }
     const auto flush_request = [this, device_addr, size, is_write, async] {
         const u32 first_block = device_addr >> block_shift;
         const u32 last_block = (device_addr + size - 1) >> block_shift;
@@ -422,7 +425,8 @@ bool BufferCache::FaultReadback(VAddr device_addr, u64 size, bool is_write) {
     // which copies and unmarks in one GPU thread command.
     u32 attempts = 0;
     while (attempts < 2) {
-        if (direct_read && DirectReadback(window, Common::AlignDown(device_addr, BYTES_PER_PAGE))) {
+        if (direct_read &&
+            DirectReadback(window, Common::AlignDown(device_addr, BYTES_PER_PAGE), false)) {
             ++attempts;
         } else {
             Readback job{.window = window};
@@ -506,7 +510,19 @@ void BufferCache::WaitForTick(u64 tick) {
                               std::memory_order_relaxed);
 }
 
-bool BufferCache::DirectReadback(VAddr window, VAddr page) {
+bool BufferCache::GpuThreadReadback(VAddr device_addr, u64 size, bool is_write) {
+    const VAddr window = Common::AlignDown(device_addr, READBACK_WINDOW_SIZE);
+    if (device_addr + size > window + READBACK_WINDOW_SIZE ||
+        !DirectReadback(window, Common::AlignDown(device_addr, BYTES_PER_PAGE), true)) {
+        return false;
+    }
+    if (is_write) {
+        memory_tracker->MarkRegionAsCpuModified(device_addr, size);
+    }
+    return true;
+}
+
+bool BufferCache::DirectReadback(VAddr window, VAddr page, bool on_gpu_thread) {
     u64 page_tick = 0;
     {
         std::scoped_lock lk{gpu_writes_mutex};
@@ -517,10 +533,16 @@ bool BufferCache::DirectReadback(VAddr window, VAddr page) {
     if (page_tick == 0) {
         return false;
     }
+    bool flushed = false;
     if (page_tick >= scheduler.CurrentTick()) {
         offload_flush_requests.fetch_add(1, std::memory_order_relaxed);
-        liverpool->SendCommand(
-            [this, page_tick] { liverpool->GetRasterizer()->RequestFlush(page_tick); });
+        if (on_gpu_thread) {
+            scheduler.Flush();
+            flushed = true;
+        } else {
+            liverpool->SendCommand(
+                [this, page_tick] { liverpool->GetRasterizer()->RequestFlush(page_tick); });
+        }
     }
     WaitForTick(page_tick);
     // Owned only now, so the GPU thread never waits for a thread that waits for it.
@@ -559,7 +581,10 @@ bool BufferCache::DirectReadback(VAddr window, VAddr page) {
         offload_direct.fetch_add(1, std::memory_order_relaxed);
         offload_direct_bytes.fetch_add(total_size, std::memory_order_relaxed);
     }
-    ConsumeGpuWrites(window, READBACK_WINDOW_SIZE, known);
+    // After the GPU thread's own flush and wait every recorded write has executed, and the writes
+    // of a packet still being bound were moved into the new batch, which marks them again at its
+    // commit: the consume takes the current tick, as the synchronous download does.
+    ConsumeGpuWrites(window, READBACK_WINDOW_SIZE, flushed ? scheduler.CurrentTick() : known);
     ReleaseWindows(window, READBACK_WINDOW_SIZE);
     return true;
 }

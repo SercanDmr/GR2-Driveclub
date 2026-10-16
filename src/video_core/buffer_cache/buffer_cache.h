@@ -212,10 +212,15 @@ private:
     bool FaultReadback(VAddr device_addr, u64 size, bool is_write);
 
     /// Serves a fault out of the arena's host mapping: waits for the newest GPU write of the
-    /// faulting page, asking the GPU thread to submit it when it is still being recorded, then
-    /// copies every retired write of the window into guest memory and consumes it. Returns false
-    /// when the window has to take the GPU thread's copy.
-    bool DirectReadback(VAddr window, VAddr page);
+    /// faulting page, submitting the open batch when it holds that write (the GPU thread flushes
+    /// in place, a guest thread asks it to), then copies every retired write of the window into
+    /// guest memory and consumes it. Returns false when the window has to take the GPU thread's
+    /// copy.
+    bool DirectReadback(VAddr window, VAddr page, bool on_gpu_thread);
+
+    /// A read fault taken on the GPU thread, served by DirectReadback. Returns false when the
+    /// synchronous download has to serve it.
+    bool GpuThreadReadback(VAddr device_addr, u64 size, bool is_write);
 
     /// Streams a GPU written range from the arena's host mapping into guest memory. Returns false
     /// when a block has no host mapping or the guest range has no backing.
