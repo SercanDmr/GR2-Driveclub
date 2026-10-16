@@ -493,9 +493,20 @@ void BufferCache::FinishReadback(const Readback& job) {
     if (verify_direct) {
         u64 bad = 0;
         for (const auto& copy : job.copies) {
-            bad += VerifyAgainstMapping(job.arena_base + copy.srcOffset,
-                                        job.staging.mapped + (copy.dstOffset - job.staging.offset),
-                                        copy.size);
+            const VAddr copy_addr = job.arena_base + copy.srcOffset;
+            // A write recorded after the copy may have retired already and show in the mapping.
+            bool newer = false;
+            {
+                std::scoped_lock lk{gpu_writes_mutex};
+                gpu_writes.ForEachInRange(copy_addr, copy.size, [&](VAddr, VAddr, u64 tick) {
+                    newer |= tick > job.tick;
+                });
+            }
+            if (newer) {
+                continue;
+            }
+            bad += VerifyAgainstMapping(
+                copy_addr, job.staging.mapped + (copy.dstOffset - job.staging.offset), copy.size);
         }
         verify_windows.fetch_add(1, std::memory_order_relaxed);
         if (bad != 0) {
