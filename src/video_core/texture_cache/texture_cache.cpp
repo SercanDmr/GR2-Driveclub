@@ -2043,8 +2043,6 @@ void TextureCache::GarbageCollectImages() {
             }
             UnregisterImage(image_id);
             if (True(image.flags & ImageFlagBits::MaybeGpuDirty)) {
-                buffer_cache.ReadMemory(image.info.guest_address, image.info.guest_size, false,
-                                        true, true);
                 maybe_download.push_back(image_id);
             } else {
                 download_queue.push_back(image_id);
@@ -2082,10 +2080,52 @@ void TextureCache::GarbageCollectImages() {
     lru_lazy_maxvisit_ = std::max(lru_lazy_maxvisit_, lazy_visits);
     lru_lazy_hard_ += lru_lazy_touch && lazy_hard;
 
+    // The images' readback pages are owned from the record of a download to its write-back, so
+    // no faulting thread reads them back meanwhile; images that overlap in memory own one range.
+    using ImageRanges = boost::container::small_vector<std::pair<VAddr, VAddr>, 8>;
+    const auto page_ranges = [&](const auto& image_ids) {
+        ImageRanges ranges;
+        for (const auto& image_id : image_ids) {
+            const auto& info = slot_images[image_id].info;
+            ranges.emplace_back(
+                PageManager::GetPageAddr(info.guest_address),
+                PageManager::GetNextPageAddr(info.guest_address + info.guest_size - 1));
+        }
+        std::ranges::sort(ranges);
+        size_t num_merged = 0;
+        for (const auto [start, end] : ranges) {
+            if (num_merged != 0 && start <= ranges[num_merged - 1].second) {
+                ranges[num_merged - 1].second = std::max(ranges[num_merged - 1].second, end);
+            } else {
+                ranges[num_merged++] = {start, end};
+            }
+        }
+        ranges.resize(num_merged);
+        return ranges;
+    };
+    const auto own = [&](const ImageRanges& ranges) {
+        for (const auto& [start, end] : ranges) {
+            buffer_cache.AcquireWindows(start, end - start);
+        }
+    };
+    const auto release = [&](const ImageRanges& ranges) {
+        for (const auto& [start, end] : ranges) {
+            buffer_cache.ReleaseWindows(start, end - start);
+        }
+    };
+
     if (!maybe_download.empty()) {
+        const auto owned = page_ranges(maybe_download);
+        own(owned);
+        for (const auto& image_id : maybe_download) {
+            const auto& image = slot_images[image_id];
+            buffer_cache.ReadMemory(image.info.guest_address, image.info.guest_size, false, true,
+                                    true);
+        }
         // wait for memory reads to finish
         scheduler.Finish();
         scheduler.DrainPendingOperations();
+        release(owned);
 
         for (const auto& image_id : maybe_download) {
             const auto& image = slot_images[image_id];
@@ -2098,27 +2138,8 @@ void TextureCache::GarbageCollectImages() {
         }
     }
 
-    // The images' readback windows are owned until their last write-back, so no faulting thread
-    // reads them back meanwhile; images that overlap in memory own one range.
-    boost::container::small_vector<std::pair<VAddr, VAddr>, 8> owned;
-    for (const auto& image_id : download_queue) {
-        const auto& info = slot_images[image_id].info;
-        owned.emplace_back(info.guest_address, info.guest_address + info.guest_size);
-    }
-    std::ranges::sort(owned);
-    size_t num_owned = 0;
-    for (const auto [start, end] : owned) {
-        if (num_owned != 0 && start <= owned[num_owned - 1].second) {
-            owned[num_owned - 1].second = std::max(owned[num_owned - 1].second, end);
-        } else {
-            owned[num_owned++] = {start, end};
-        }
-    }
-    owned.resize(num_owned);
-    for (const auto& [start, end] : owned) {
-        buffer_cache.AcquireWindows(start, end - start);
-    }
-
+    const auto owned = page_ranges(download_queue);
+    own(owned);
     for (const auto& image_id : download_queue) {
         buffer_cache.ReadEdgeImagePages(slot_images[image_id]);
     }
@@ -2134,9 +2155,7 @@ void TextureCache::GarbageCollectImages() {
         scheduler.DrainPendingOperations();
     }
 
-    for (const auto& [start, end] : owned) {
-        buffer_cache.ReleaseWindows(start, end - start);
-    }
+    release(owned);
     for (const auto& image_id : download_queue) {
         DeleteImage(image_id);
     }

@@ -209,15 +209,19 @@ void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool as
         const u32 first_block = device_addr >> block_shift;
         const u32 last_block = (device_addr + size - 1) >> block_shift;
         const auto* arena = GetArena(first_block, last_block);
-
-        // GPU-modified ranges come as many small scattered islands,
-        // so the download is widened to a window around the request
-        const VAddr arena_end = arena->cpu_addr + arena->size_bytes;
-        const VAddr window_start =
-            std::max<VAddr>(Common::AlignDown(device_addr, READBACK_WINDOW_SIZE), arena->cpu_addr);
-        const VAddr window_end = std::min<VAddr>(
-            std::max<VAddr>(window_start + READBACK_WINDOW_SIZE, device_addr + size), arena_end);
-        DownloadMemory(arena, window_start, window_end - window_start, async);
+        VAddr start = Common::AlignDown(device_addr, BYTES_PER_PAGE);
+        VAddr end = Common::AlignUp(device_addr + size, BYTES_PER_PAGE);
+        if (!async) {
+            // GPU-modified ranges come as many small scattered islands, so a fault's download is
+            // widened to a window around the request; an asynchronous caller owns exactly the
+            // pages of its range.
+            const VAddr arena_end = arena->cpu_addr + arena->size_bytes;
+            start = std::max<VAddr>(Common::AlignDown(device_addr, READBACK_WINDOW_SIZE),
+                                    arena->cpu_addr);
+            end = std::min<VAddr>(std::max<VAddr>(start + READBACK_WINDOW_SIZE, device_addr + size),
+                                  arena_end);
+        }
+        DownloadMemory(arena, start, end - start, async);
         if (is_write) {
             memory_tracker->MarkRegionAsCpuModified(device_addr, size);
         }
@@ -254,14 +258,11 @@ u64 BufferCache::CollectDownloads(const Buffer* arena, VAddr device_addr, u64 si
 }
 
 void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 size, bool async) {
-    // A deferred write-back runs on this thread, so an async download waits for the window
-    // instead of owning it across the wait; no faulting thread takes a window while this thread
-    // is busy.
+    // An asynchronous download's caller owns the range until the deferred write-back has run; a
+    // synchronous one owns it here.
     const bool own_window = readback_offload && !async;
     if (own_window) {
         AcquireWindows(device_addr, size);
-    } else if (readback_offload) {
-        WaitWindowsFree(device_addr, size);
     }
     DownloadCopies copies;
     const VAddr arena_base = arena->cpu_addr;
