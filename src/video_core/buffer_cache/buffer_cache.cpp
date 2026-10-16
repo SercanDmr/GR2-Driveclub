@@ -526,19 +526,28 @@ bool BufferCache::DirectReadback(VAddr window, VAddr page) {
     // Owned only now, so the GPU thread never waits for a thread that waits for it.
     AcquireWindows(window, READBACK_WINDOW_SIZE);
     const u64 known = scheduler.GetWorkSemaphore()->KnownGpuTick();
-    boost::container::small_vector<Range, 16> islands;
+    // The island list lives on the signal stack; a window with more retired islands than it
+    // holds takes the GPU thread's copy.
+    static constexpr size_t MaxIslands = 32;
+    boost::container::small_vector<Range, MaxIslands> islands;
     u64 total_size = 0;
+    bool copied = true;
     {
         std::scoped_lock lk{gpu_writes_mutex};
         gpu_writes.ForEachInRange(window, READBACK_WINDOW_SIZE,
                                   [&](VAddr begin, VAddr end, u64 tick) {
-                                      if (tick <= known) {
-                                          islands.push_back({begin, end - begin});
-                                          total_size += end - begin;
+                                      if (tick > known) {
+                                          return;
                                       }
+                                      if (islands.size() == MaxIslands) {
+                                          copied = false;
+                                          return;
+                                      }
+                                      islands.push_back({begin, end - begin});
+                                      total_size += end - begin;
                                   });
     }
-    bool copied = total_size <= direct_read_limit;
+    copied = copied && total_size <= direct_read_limit;
     for (auto it = islands.begin(); copied && it != islands.end(); ++it) {
         copied = DirectRead(it->addr, it->size);
     }
@@ -546,8 +555,10 @@ bool BufferCache::DirectReadback(VAddr window, VAddr page) {
         ReleaseWindows(window, READBACK_WINDOW_SIZE);
         return false;
     }
-    offload_direct.fetch_add(1, std::memory_order_relaxed);
-    offload_direct_bytes.fetch_add(total_size, std::memory_order_relaxed);
+    if (total_size != 0) {
+        offload_direct.fetch_add(1, std::memory_order_relaxed);
+        offload_direct_bytes.fetch_add(total_size, std::memory_order_relaxed);
+    }
     ConsumeGpuWrites(window, READBACK_WINDOW_SIZE, known);
     ReleaseWindows(window, READBACK_WINDOW_SIZE);
     return true;
@@ -904,24 +915,32 @@ void BufferCache::EnsureResident(const Buffer* arena, u64 first_block, u64 last_
     const vk::MemoryAllocateFlagsInfo alloc_flags = {
         .flags = vk::MemoryAllocateFlagBits::eDeviceAddress,
     };
+    const bool host_type = arena_host_visible && !arena_host_spent;
     vk::MemoryAllocateInfo alloc_info = {
         .pNext = &alloc_flags,
         .allocationSize = resident_blocks << block_shift,
-        .memoryTypeIndex = arena_memory_type_index,
+        .memoryTypeIndex = host_type ? arena_memory_type_index : arena_device_type_index,
     };
     const auto device = instance.GetDevice();
     auto allocation = device.allocateMemory(alloc_info);
-    if (allocation.result != vk::Result::eSuccess &&
+    if (allocation.result != vk::Result::eSuccess && host_type &&
         arena_memory_type_index != arena_device_type_index) {
-        LOG_WARNING(Render_Vulkan, "Host visible arena memory spent, {} bytes go to device memory",
-                    alloc_info.allocationSize);
+        LOG_WARNING(Render_Vulkan,
+                    "Host visible arena memory spent, arenas continue in device memory");
+        arena_host_spent = true;
         alloc_info.memoryTypeIndex = arena_device_type_index;
         allocation = device.allocateMemory(alloc_info);
     }
     const auto device_memory = Vulkan::Check(allocation);
     u8* host = nullptr;
-    if (arena_host_visible && alloc_info.memoryTypeIndex == arena_memory_type_index) {
-        host = static_cast<u8*>(Vulkan::Check(device.mapMemory(device_memory, 0, vk::WholeSize)));
+    if (host_type && !arena_host_spent) {
+        const auto [map_result, mapping] = device.mapMemory(device_memory, 0, vk::WholeSize);
+        if (map_result == vk::Result::eSuccess) {
+            host = static_cast<u8*>(mapping);
+        } else {
+            LOG_WARNING(Render_Vulkan, "Mapping arena memory failed: {}",
+                        vk::to_string(map_result));
+        }
     }
 
     boost::container::small_vector<vk::BufferCopy, 8> copies;

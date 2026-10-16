@@ -306,6 +306,8 @@ private:
     /// visible heap is spent.
     u32 arena_device_type_index{};
     bool arena_host_visible{};
+    /// Set once a host visible allocation failed; later allocations take device memory.
+    bool arena_host_spent{};
     u32 block_size{};
     u32 block_shift{};
     u32 blocks_per_arena_page{};
