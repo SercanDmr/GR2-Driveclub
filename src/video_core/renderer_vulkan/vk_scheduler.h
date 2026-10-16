@@ -504,6 +504,12 @@ public:
         this->on_submit = std::move(on_submit);
     }
 
+    /// Ends the open command buffer with a device-to-host memory barrier, so the host may read
+    /// the GPU writes of this batch once its tick passes.
+    void RequestHostReadBarrier() noexcept {
+        host_read_barrier = true;
+    }
+
     /// Returns the current render state.
     const RenderState& GetRenderState() const {
         return render_state;
@@ -589,6 +595,7 @@ private:
     DynamicState dynamic_state;
     SessionFunc on_session{};
     SubmitFunc on_submit{};
+    bool host_read_barrier{};
     struct Session {
         vk::CommandBuffer upload{};
         vk::CommandBuffer primary{};

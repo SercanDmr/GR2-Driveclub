@@ -268,16 +268,25 @@ private:
     struct Backing : public Interval {
         vk::DeviceMemory memory;
         u64 offset;
+        /// Host mapping of the allocation; nullptr when its memory type has no host access.
+        u8* host;
         constexpr bool CanMergeWith(const Backing& other) const noexcept {
             return memory == other.memory && offset + (end - start) == other.offset;
         }
         constexpr Backing SubRange(u64 a, u64 b) const noexcept {
-            return {{a, b}, memory, offset + (a - start)};
+            return {{a, b}, memory, offset + (a - start), host};
         }
     };
+    /// Guards resident_ranges between the GPU thread, which grows it, and the faulting threads,
+    /// which look blocks up.
+    std::mutex arena_mutex;
     IntervalList<Backing> resident_ranges;
 
     u32 arena_memory_type_index{};
+    /// Plain device memory, the arena type without the offload and the fallback once the host
+    /// visible heap is spent.
+    u32 arena_device_type_index{};
+    bool arena_host_visible{};
     u32 block_size{};
     u32 block_shift{};
     u32 blocks_per_arena_page{};

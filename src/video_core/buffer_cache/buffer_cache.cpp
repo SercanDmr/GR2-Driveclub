@@ -74,6 +74,37 @@ std::optional<u32> FindMemoryType(const vk::PhysicalDeviceMemoryProperties& prop
     return std::nullopt;
 }
 
+// arena_memory_type: 0 auto, 1 device local, 2 host visible device local, 3 host cached. Auto
+// takes host visible device memory when its heap is the device's video memory (integrated GPUs,
+// resizable BAR) and leaves a BAR carveout of a few hundred MiB alone.
+static std::optional<u32> FindHostVisibleArenaType(const Vulkan::Instance& instance,
+                                                   u32 memory_type_bits, u32 mode) {
+    using Flags = vk::MemoryPropertyFlagBits;
+    if (mode == 1) {
+        return std::nullopt;
+    }
+    const auto& props = instance.GetMemoryProperties();
+    const auto wanted = mode == 3
+                            ? Flags::eHostVisible | Flags::eHostCoherent | Flags::eHostCached
+                            : Flags::eDeviceLocal | Flags::eHostVisible | Flags::eHostCoherent;
+    const auto type = FindMemoryType(props, wanted, memory_type_bits);
+    if (!type || mode != 0 || instance.IsIntegrated()) {
+        return type;
+    }
+    u64 largest_local_heap = 0;
+    for (u32 i = 0; i < props.memoryHeapCount; ++i) {
+        if ((props.memoryHeaps[i].flags & vk::MemoryHeapFlagBits::eDeviceLocal) !=
+            vk::MemoryHeapFlags{}) {
+            largest_local_heap = std::max<u64>(largest_local_heap, props.memoryHeaps[i].size);
+        }
+    }
+    const u64 heap_size = props.memoryHeaps[props.memoryTypes[*type].heapIndex].size;
+    if (heap_size >= 1_GB && heap_size == largest_local_heap) {
+        return type;
+    }
+    return std::nullopt;
+}
+
 BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& scheduler_,
                          Vulkan::Runtime& runtime_, AmdGpu::Liverpool* liverpool_,
                          TextureCache& texture_cache_, PageManager& tracker)
@@ -102,10 +133,21 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
     block_shift = std::bit_width(block_size) - 1;
     blocks_per_arena_page = ARENA_PAGE_SIZE / block_size;
     blocks_per_arena_page_shift = ARENA_PAGE_BITS - block_shift;
-    arena_memory_type_index =
+    arena_device_type_index =
         FindMemoryType(instance.GetMemoryProperties(), vk::MemoryPropertyFlagBits::eDeviceLocal,
                        reqs.memoryTypeBits)
             .value();
+    arena_memory_type_index = arena_device_type_index;
+    readback_offload = EmulatorSettings.IsReadbackOffload();
+    if (readback_offload) {
+        if (const auto host_type = FindHostVisibleArenaType(
+                instance, reqs.memoryTypeBits, EmulatorSettings.GetArenaMemoryType())) {
+            arena_memory_type_index = *host_type;
+            arena_host_visible = true;
+        }
+    }
+    LOG_INFO(Render_Vulkan, "Readback arena memory type {}, host visible: {}",
+             arena_memory_type_index, arena_host_visible);
 
     const u64 bda_pagetable_size =
         (blocks_per_arena_page * NUM_ARENA_PAGES) * sizeof(vk::DeviceAddress);
@@ -129,7 +171,6 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
         runtime.SetUntrackedBuffer(&stream_buffer);
     }
     clean_sync_peek = EmulatorSettings.IsCleanSyncPeek();
-    readback_offload = EmulatorSettings.IsReadbackOffload();
 }
 
 BufferCache::~BufferCache() = default;
@@ -555,6 +596,9 @@ void BufferCache::MarkRegionAsGpuModified(VAddr addr, size_t size) {
     texture_cache.MarkAsMaybeGpuDirty(addr, size);
     StampGpuWrite(addr, size, scheduler.CurrentTick());
     memory_tracker->MarkRegionAsGpuModified(addr, size);
+    if (arena_host_visible) {
+        scheduler.RequestHostReadBarrier();
+    }
 }
 
 void BufferCache::StampGpuWrite(VAddr device_addr, u64 size, u64 tick) {
@@ -570,6 +614,9 @@ void BufferCache::MarkGpuWrite(VAddr device_addr, u64 size) {
 void BufferCache::CommitGpuWrites() {
     if (in_flight.empty()) {
         return;
+    }
+    if (arena_host_visible) {
+        scheduler.RequestHostReadBarrier();
     }
     // A flush between the binds and the record moved the packet into the current batch, and a
     // synchronous download on this thread meanwhile consumed the writes it found: they are
@@ -765,12 +812,25 @@ void BufferCache::EnsureResident(const Buffer* arena, u64 first_block, u64 last_
     const vk::MemoryAllocateFlagsInfo alloc_flags = {
         .flags = vk::MemoryAllocateFlagBits::eDeviceAddress,
     };
-    const vk::MemoryAllocateInfo alloc_info = {
+    vk::MemoryAllocateInfo alloc_info = {
         .pNext = &alloc_flags,
         .allocationSize = resident_blocks << block_shift,
         .memoryTypeIndex = arena_memory_type_index,
     };
-    const auto device_memory = Vulkan::Check(instance.GetDevice().allocateMemory(alloc_info));
+    const auto device = instance.GetDevice();
+    auto allocation = device.allocateMemory(alloc_info);
+    if (allocation.result != vk::Result::eSuccess &&
+        arena_memory_type_index != arena_device_type_index) {
+        LOG_WARNING(Render_Vulkan, "Host visible arena memory spent, {} bytes go to device memory",
+                    alloc_info.allocationSize);
+        alloc_info.memoryTypeIndex = arena_device_type_index;
+        allocation = device.allocateMemory(alloc_info);
+    }
+    const auto device_memory = Vulkan::Check(allocation);
+    u8* host = nullptr;
+    if (arena_host_visible && alloc_info.memoryTypeIndex == arena_memory_type_index) {
+        host = static_cast<u8*>(Vulkan::Check(device.mapMemory(device_memory, 0, vk::WholeSize)));
+    }
 
     boost::container::small_vector<vk::BufferCopy, 8> copies;
     const auto staging =
@@ -786,7 +846,11 @@ void BufferCache::EnsureResident(const Buffer* arena, u64 first_block, u64 last_
         backing.end = range.end;
         backing.memory = device_memory;
         backing.offset = memory_offset >> block_shift;
-        resident_ranges.Add(backing);
+        backing.host = host;
+        {
+            std::scoped_lock lk{arena_mutex};
+            resident_ranges.Add(backing);
+        }
         for (u64 block = range.start; block < range.end && !resident_bits.empty(); ++block) {
             resident_bits[block >> 6] |= u64{1} << (block & 63);
         }
