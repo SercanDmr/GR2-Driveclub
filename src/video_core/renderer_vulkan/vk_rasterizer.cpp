@@ -1112,6 +1112,10 @@ void Rasterizer::EmitSkipcacheTelemetry(Skipcache::Framework& skipcache) {
                  os.busy, os.empty, os.stale, os.orphans, os.waits, os.wait_ns / 1000000,
                  os.restamps, os.segments);
     }
+    if (const auto vs = buffer_cache.DrainVerifyStats(); vs.windows != 0) {
+        LOG_INFO(Render_Skipcache, "[SkipCache] VERIFY windows={} bad={} first_bad={:#x} per300f",
+                 vs.windows, vs.bad, vs.first_bad);
+    }
     if (tracker_lock_spin_) {
         const auto tl = VideoCore::RegionLock::Drain();
         LOG_INFO(Render_Skipcache,

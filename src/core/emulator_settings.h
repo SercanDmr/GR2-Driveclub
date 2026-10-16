@@ -501,6 +501,9 @@ struct GPUSettings {
     // Largest direct read in KiB; a window with more retired bytes takes the GPU thread's copy.
     // 0 = 256 on discrete GPUs, no limit on integrated ones.
     Setting<u32> readback_direct_max_kb{0};
+    // Temporary check of the direct read: faults take the GPU thread's copy and compare it with
+    // the arena's host mapping, counted in the VERIFY telemetry line.
+    Setting<bool> readback_verify{false};
     // Flush the open graphics batch early when it already holds this many draws and every batch
     // submitted so far has retired (the ring runs dry while the rest of the batch is recorded).
     // Rounded up to a multiple of 32, and ignored unless flush_draw_interval is set larger than
@@ -766,6 +769,7 @@ struct GPUSettings {
             GPU_OVERRIDE(arena_memory_type),
             GPU_OVERRIDE(readback_direct_read),
             GPU_OVERRIDE(readback_direct_max_kb),
+            GPU_OVERRIDE(readback_verify),
             GPU_OVERRIDE(ring_drain_flush_draws),
             GPU_OVERRIDE(pending_pop_throttle),
             GPU_OVERRIDE(stream_copy_workers),
@@ -858,7 +862,7 @@ struct GPUSettings {
     vertex_layout_memo, covered_range_skip, residency_bitmap, \
     readback_linear_images_async, inline_fetch_shader, stream_barrier_skip, \
     clean_sync_peek, readback_offload, arena_memory_type, readback_direct_read, \
-    readback_direct_max_kb
+    readback_direct_max_kb, readback_verify
 // clang-format on
 template <
     typename BasicJsonType,
@@ -1203,6 +1207,7 @@ public:
     SETTING_FORWARD(m_gpu, ArenaMemoryType, arena_memory_type)
     SETTING_FORWARD_BOOL(m_gpu, ReadbackDirectRead, readback_direct_read)
     SETTING_FORWARD(m_gpu, ReadbackDirectMaxKb, readback_direct_max_kb)
+    SETTING_FORWARD_BOOL(m_gpu, ReadbackVerify, readback_verify)
     SETTING_FORWARD(m_gpu, RingDrainFlushDraws, ring_drain_flush_draws)
     SETTING_FORWARD(m_gpu, PendingPopThrottle, pending_pop_throttle)
     SETTING_FORWARD(m_gpu, StreamCopyWorkers, stream_copy_workers)
