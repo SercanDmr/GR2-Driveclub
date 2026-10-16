@@ -386,6 +386,10 @@ void Liverpool::Process(std::stop_token stoken) {
                 rasterizer->Flush();
             }
             submit_done = false;
+        } else if (rasterizer) {
+            // Out of packets: a readback request the clear guard deferred would otherwise wait
+            // for the next draw.
+            rasterizer->FlushRequested(true);
         }
 
         Platform::IrqC::Instance()->Signal(Platform::InterruptId::GpuIdle);

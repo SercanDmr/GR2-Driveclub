@@ -706,7 +706,11 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
     buffer_cache.CommitGpuWrites();
 
     ResetBindings(false);
-    if (flush_draw_interval_ != 0 || flush_request_tick_ != 0) {
+    if (flush_request_tick_ != 0) {
+        copy_scope.reset();
+        FlushRequested();
+    }
+    if (flush_draw_interval_ != 0) {
         // The flush submits; it must not run under the guest-copy shared lock.
         copy_scope.reset();
         MaybeIntervalFlush();
@@ -714,12 +718,28 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
 }
 
 void Rasterizer::RequestFlush(u64 tick) {
-    // A flush since the request submitted the batch the waiter needs.
-    if (tick < scheduler.CurrentTick()) {
+    if (tick >= scheduler.CurrentTick()) {
+        flush_request_tick_ = tick;
+    }
+    FlushRequested();
+}
+
+void Rasterizer::FlushRequested(bool force) {
+    if (flush_request_tick_ == 0) {
         return;
     }
-    flush_request_tick_ = tick;
-    MaybeIntervalFlush();
+    // A flush since the request submitted the batch the waiter needs.
+    if (flush_request_tick_ < scheduler.CurrentTick()) {
+        flush_request_tick_ = 0;
+        return;
+    }
+    const auto& ds = scheduler.GetRenderState().depth_stencil_attachment;
+    if (!force && scheduler.IsRendering() && (ds.depth_clear || ds.stencil_clear)) {
+        return;
+    }
+    DropCopyHold(hold_drops_flush_);
+    scheduler.Flush();
+    flush_request_tick_ = 0;
 }
 
 void Rasterizer::MaybeIntervalFlush() {
@@ -728,13 +748,8 @@ void Rasterizer::MaybeIntervalFlush() {
         flush_tick_ = tick;
         draws_since_flush_ = 0;
     }
-    // A request for an older tick was met by the flush that moved the tick.
-    const bool requested = flush_request_tick_ == tick;
-    if (!requested) {
-        flush_request_tick_ = 0;
-    }
     bool drain = false;
-    if (!requested && (flush_draw_interval_ == 0 || ++draws_since_flush_ < flush_draw_interval_)) {
+    if (flush_draw_interval_ == 0 || ++draws_since_flush_ < flush_draw_interval_) {
         // If the GPU has retired everything submitted so far it is recording
         // into an idle ring; hand it this much of the open batch now.
         if (ring_drain_flush_draws_ == 0 || draws_since_flush_ < ring_drain_flush_draws_ ||
@@ -747,7 +762,7 @@ void Rasterizer::MaybeIntervalFlush() {
         // pass could never flush; do not pay its query. (A firing drain reads
         // the attachment again there; the second read cannot differ.)
         const auto& clear_ds = scheduler.GetRenderState().depth_stencil_attachment;
-        if (clear_ds.depth_clear || clear_ds.stencil_clear) {
+        if (scheduler.IsRendering() && (clear_ds.depth_clear || clear_ds.stencil_clear)) {
             return;
         }
         ++drain_polls_;
@@ -761,19 +776,18 @@ void Rasterizer::MaybeIntervalFlush() {
     // BeginRendering re-derives the clear load op, so a scope re-begun after
     // a flush would clear the attachment a second time.
     const auto& ds = scheduler.GetRenderState().depth_stencil_attachment;
-    if (ds.depth_clear || ds.stencil_clear) {
+    if (scheduler.IsRendering() && (ds.depth_clear || ds.stencil_clear)) {
         return;
     }
     DropCopyHold(hold_drops_flush_);
     scheduler.Flush();
-    flush_request_tick_ = 0;
     if (drain) {
         ++drain_flushes_;
         drain_draw_sum_ += draws_since_flush_;
         drain_draw_max_ = std::max(drain_draw_max_, draws_since_flush_);
     }
     draws_since_flush_ = 0;
-    if (!drain && !requested) {
+    if (!drain) {
         ++interval_flushes_;
     }
 }
@@ -948,7 +962,11 @@ void Rasterizer::DispatchDirect() {
     buffer_cache.CommitGpuWrites();
 
     ResetBindings(true);
-    if (flush_draw_interval_ != 0 || flush_request_tick_ != 0) {
+    if (flush_request_tick_ != 0) {
+        copy_scope.reset();
+        FlushRequested();
+    }
+    if (flush_draw_interval_ != 0) {
         copy_scope.reset();
         MaybeIntervalFlush();
     }

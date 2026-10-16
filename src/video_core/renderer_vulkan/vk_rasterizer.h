@@ -88,9 +88,12 @@ public:
 
     u64 Flush();
     void Finish();
-    /// Submits the open batch for a readback thread waiting on its tick, at the next point the
-    /// interval flush allows. Runs on the GPU command thread.
+    /// Submits the open batch for a readback thread waiting on its tick. Runs on the GPU command
+    /// thread.
     void RequestFlush(u64 tick);
+    /// Flushes for a pending RequestFlush; a depth or stencil clear in the open render scope
+    /// defers it to the next draw boundary unless forced.
+    void FlushRequested(bool force = false);
     void OnSubmit();
     void OnFence();
 
