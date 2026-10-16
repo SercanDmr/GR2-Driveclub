@@ -485,8 +485,9 @@ struct GPUSettings {
     // the locked walk over them when none is set.
     Setting<bool> clean_sync_peek{true};
     // The faulting thread performs its readback and the GPU command thread never waits for it:
-    // the copy of the window is submitted at once, the faulting thread waits for it and writes the
-    // bytes back, and a GPU write marked in the window meanwhile keeps its pages GPU modified.
+    // retired GPU writes are read straight out of a host visible arena, otherwise the GPU thread
+    // copies the window and the faulting thread waits for the copy; a GPU write marked in the
+    // window meanwhile keeps its pages GPU modified.
     Setting<bool> readback_offload{false};
     // Memory type of the sparse buffer arenas while readback_offload is on, which a faulting
     // thread reads directly when the type is host visible: 0 picks host visible device memory
@@ -494,6 +495,12 @@ struct GPUSettings {
     // device memory, 2 takes host visible device memory whatever its heap, 3 takes host cached
     // memory.
     Setting<u32> arena_memory_type{0};
+    // A faulting thread copies retired GPU writes straight out of a host visible arena; off makes
+    // it take the GPU thread's copy instead.
+    Setting<bool> readback_direct_read{true};
+    // Largest direct read in KiB; a window with more retired bytes takes the GPU thread's copy.
+    // 0 = 256 on discrete GPUs, no limit on integrated ones.
+    Setting<u32> readback_direct_max_kb{0};
     // Flush the open graphics batch early when it already holds this many draws and every batch
     // submitted so far has retired (the ring runs dry while the rest of the batch is recorded).
     // Rounded up to a multiple of 32, and ignored unless flush_draw_interval is set larger than
@@ -757,6 +764,8 @@ struct GPUSettings {
             GPU_OVERRIDE(clean_sync_peek),
             GPU_OVERRIDE(readback_offload),
             GPU_OVERRIDE(arena_memory_type),
+            GPU_OVERRIDE(readback_direct_read),
+            GPU_OVERRIDE(readback_direct_max_kb),
             GPU_OVERRIDE(ring_drain_flush_draws),
             GPU_OVERRIDE(pending_pop_throttle),
             GPU_OVERRIDE(stream_copy_workers),
@@ -848,7 +857,8 @@ struct GPUSettings {
     runtime_info_stamp_gate, userfaultfd, gpu_thread_core_reserve, one_thread_per_core, \
     vertex_layout_memo, covered_range_skip, residency_bitmap, \
     readback_linear_images_async, inline_fetch_shader, stream_barrier_skip, \
-    clean_sync_peek, readback_offload, arena_memory_type
+    clean_sync_peek, readback_offload, arena_memory_type, readback_direct_read, \
+    readback_direct_max_kb
 // clang-format on
 template <
     typename BasicJsonType,
@@ -1191,6 +1201,8 @@ public:
     SETTING_FORWARD_BOOL(m_gpu, CleanSyncPeek, clean_sync_peek)
     SETTING_FORWARD_BOOL(m_gpu, ReadbackOffload, readback_offload)
     SETTING_FORWARD(m_gpu, ArenaMemoryType, arena_memory_type)
+    SETTING_FORWARD_BOOL(m_gpu, ReadbackDirectRead, readback_direct_read)
+    SETTING_FORWARD(m_gpu, ReadbackDirectMaxKb, readback_direct_max_kb)
     SETTING_FORWARD(m_gpu, RingDrainFlushDraws, ring_drain_flush_draws)
     SETTING_FORWARD(m_gpu, PendingPopThrottle, pending_pop_throttle)
     SETTING_FORWARD(m_gpu, StreamCopyWorkers, stream_copy_workers)

@@ -101,6 +101,10 @@ public:
         rasterizer = rasterizer_;
     }
 
+    Vulkan::Rasterizer* GetRasterizer() const noexcept {
+        return rasterizer;
+    }
+
     /// True when a submit or a queued command is waiting for the parser. Work
     /// the GPU command thread runs while otherwise idle polls this to yield.
     bool HasPendingWork() const noexcept {

@@ -163,6 +163,9 @@ public:
         u64 waits;
         u64 wait_ns;
         u64 restamps;
+        u64 direct;
+        u64 direct_bytes;
+        u64 flush_requests;
         u64 segments;
     };
     OffloadStats DrainOffloadStats();
@@ -200,6 +203,19 @@ private:
     /// Serves a fault from the thread that took it, inside one readback window, while the GPU
     /// thread keeps running. Returns false when the request has to take the synchronous download.
     bool FaultReadback(VAddr device_addr, u64 size, bool is_write);
+
+    /// Serves a fault out of the arena's host mapping: waits for the newest GPU write of the
+    /// faulting page, asking the GPU thread to submit it when it is still being recorded, then
+    /// copies every retired write of the window into guest memory and consumes it. Returns false
+    /// when the window has to take the GPU thread's copy.
+    bool DirectReadback(VAddr window, VAddr page);
+
+    /// Streams a GPU written range from the arena's host mapping into guest memory. Returns false
+    /// when a block has no host mapping or the guest range has no backing.
+    bool DirectRead(VAddr device_addr, u64 size);
+
+    /// Waits for a submitted tick, counting the waits that block.
+    void WaitForTick(u64 tick);
 
     /// Records and submits the copy of the GPU written ranges of a readback window, which the
     /// faulting thread then owns. Runs on the GPU thread.
@@ -299,6 +315,8 @@ private:
     FastPathStats fast_stats{};
 
     bool readback_offload{};
+    bool direct_read{};
+    u64 direct_read_limit{};
     std::mutex window_mutex;
     std::condition_variable window_cv;
     boost::container::small_vector<Range, 8> window_owners;
@@ -312,6 +330,9 @@ private:
     std::atomic<u64> offload_waits{};
     std::atomic<u64> offload_wait_ns{};
     std::atomic<u64> offload_restamps{};
+    std::atomic<u64> offload_direct{};
+    std::atomic<u64> offload_direct_bytes{};
+    std::atomic<u64> offload_flush_requests{};
 };
 
 } // namespace VideoCore

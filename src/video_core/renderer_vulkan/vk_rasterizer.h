@@ -88,6 +88,9 @@ public:
 
     u64 Flush();
     void Finish();
+    /// Submits the open batch for a readback thread waiting on its tick, at the next point the
+    /// interval flush allows. Runs on the GPU command thread.
+    void RequestFlush(u64 tick);
     void OnSubmit();
     void OnFence();
 
@@ -220,6 +223,8 @@ private:
     u32 flush_draw_interval_{};
     u32 draws_since_flush_{};
     u64 flush_tick_{};
+    // The tick a readback thread asked RequestFlush to submit; 0 = none pending.
+    u64 flush_request_tick_{};
     bool tracker_lock_spin_{};
     u64 interval_flushes_{};
     // ring_drain_flush_draws: boot-latched, clamped to >= 32 and rounded up to

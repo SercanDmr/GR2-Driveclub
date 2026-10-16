@@ -290,7 +290,7 @@ public:
 
     /// A contiguous run of the never-protected physical backing view.
     struct BackingSpan {
-        const u8* ptr;
+        u8* ptr;
         u64 size;
     };
     /// Resolves [virtual_addr, virtual_addr + size) to backing spans for the

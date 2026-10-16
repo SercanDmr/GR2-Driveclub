@@ -706,11 +706,20 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
     buffer_cache.CommitGpuWrites();
 
     ResetBindings(false);
-    if (flush_draw_interval_ != 0) {
+    if (flush_draw_interval_ != 0 || flush_request_tick_ != 0) {
         // The flush submits; it must not run under the guest-copy shared lock.
         copy_scope.reset();
         MaybeIntervalFlush();
     }
+}
+
+void Rasterizer::RequestFlush(u64 tick) {
+    // A flush since the request submitted the batch the waiter needs.
+    if (tick < scheduler.CurrentTick()) {
+        return;
+    }
+    flush_request_tick_ = tick;
+    MaybeIntervalFlush();
 }
 
 void Rasterizer::MaybeIntervalFlush() {
@@ -719,8 +728,13 @@ void Rasterizer::MaybeIntervalFlush() {
         flush_tick_ = tick;
         draws_since_flush_ = 0;
     }
+    // A request for an older tick was met by the flush that moved the tick.
+    const bool requested = flush_request_tick_ == tick;
+    if (!requested) {
+        flush_request_tick_ = 0;
+    }
     bool drain = false;
-    if (flush_draw_interval_ == 0 || ++draws_since_flush_ < flush_draw_interval_) {
+    if (!requested && (flush_draw_interval_ == 0 || ++draws_since_flush_ < flush_draw_interval_)) {
         // If the GPU has retired everything submitted so far it is recording
         // into an idle ring; hand it this much of the open batch now.
         if (ring_drain_flush_draws_ == 0 || draws_since_flush_ < ring_drain_flush_draws_ ||
@@ -752,13 +766,14 @@ void Rasterizer::MaybeIntervalFlush() {
     }
     DropCopyHold(hold_drops_flush_);
     scheduler.Flush();
+    flush_request_tick_ = 0;
     if (drain) {
         ++drain_flushes_;
         drain_draw_sum_ += draws_since_flush_;
         drain_draw_max_ = std::max(drain_draw_max_, draws_since_flush_);
     }
     draws_since_flush_ = 0;
-    if (!drain) {
+    if (!drain && !requested) {
         ++interval_flushes_;
     }
 }
@@ -933,7 +948,7 @@ void Rasterizer::DispatchDirect() {
     buffer_cache.CommitGpuWrites();
 
     ResetBindings(true);
-    if (flush_draw_interval_ != 0) {
+    if (flush_draw_interval_ != 0 || flush_request_tick_ != 0) {
         copy_scope.reset();
         MaybeIntervalFlush();
     }
@@ -1075,10 +1090,11 @@ void Rasterizer::EmitSkipcacheTelemetry(Skipcache::Framework& skipcache) {
     ws = {};
     if (const auto os = buffer_cache.DrainOffloadStats(); os.faults || os.copies || os.restamps) {
         LOG_INFO(Render_Skipcache,
-                 "[SkipCache] OFFLOAD faults={} copies={} busy={} empty={} stale={} orphans={} "
-                 "waited={}/{}ms restamps={} segments={} per300f",
-                 os.faults, os.copies, os.busy, os.empty, os.stale, os.orphans, os.waits,
-                 os.wait_ns / 1000000, os.restamps, os.segments);
+                 "[SkipCache] OFFLOAD faults={} direct={}/{}KiB flushreq={} copies={} busy={} "
+                 "empty={} stale={} orphans={} waited={}/{}ms restamps={} segments={} per300f",
+                 os.faults, os.direct, os.direct_bytes / 1024, os.flush_requests, os.copies,
+                 os.busy, os.empty, os.stale, os.orphans, os.waits, os.wait_ns / 1000000,
+                 os.restamps, os.segments);
     }
     if (tracker_lock_spin_) {
         const auto tl = VideoCore::RegionLock::Drain();

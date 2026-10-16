@@ -872,6 +872,7 @@ set(COMMON src/common/logging/classes.cpp
            src/common/stb.h
            src/common/string_literal.h
            src/common/string_util.cpp
+           src/common/stream_copy.h
            src/common/string_util.h
            src/common/thread.cpp
            src/common/thread.h

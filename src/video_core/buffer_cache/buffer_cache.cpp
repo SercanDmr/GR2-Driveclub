@@ -8,6 +8,7 @@
 
 #include "common/alignment.h"
 #include "common/scope_exit.h"
+#include "common/stream_copy.h"
 #include "core/debug_state.h"
 #include "core/emulator_settings.h"
 #include "core/libraries/kernel/threads/exception.h"
@@ -20,6 +21,7 @@
 #include "video_core/buffer_cache/stream_copy_lane.h"
 #include "video_core/renderer_vulkan/vk_graphics_pipeline.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
+#include "video_core/renderer_vulkan/vk_rasterizer.h"
 #include "video_core/renderer_vulkan/vk_runtime.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/skipcache/skipcache.h"
@@ -145,9 +147,14 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
             arena_memory_type_index = *host_type;
             arena_host_visible = true;
         }
+        direct_read = arena_host_visible && EmulatorSettings.IsReadbackDirectRead();
+        const u64 limit_kb = EmulatorSettings.GetReadbackDirectMaxKb();
+        direct_read_limit = limit_kb != 0             ? limit_kb * 1_KB
+                            : instance.IsIntegrated() ? READBACK_WINDOW_SIZE
+                                                      : 256_KB;
     }
-    LOG_INFO(Render_Vulkan, "Readback arena memory type {}, host visible: {}",
-             arena_memory_type_index, arena_host_visible);
+    LOG_INFO(Render_Vulkan, "Readback arena memory type {}, host visible: {}, direct read: {}",
+             arena_memory_type_index, arena_host_visible, direct_read);
 
     const u64 bda_pagetable_size =
         (blocks_per_arena_page * NUM_ARENA_PAGES) * sizeof(vk::DeviceAddress);
@@ -414,24 +421,22 @@ bool BufferCache::FaultReadback(VAddr device_addr, u64 size, bool is_write) {
     // which copies and unmarks in one GPU thread command.
     u32 attempts = 0;
     while (attempts < 2) {
-        Readback job{.window = window};
-        liverpool->SendCommand<true>([this, &job] { RecordReadback(job); });
-        if (job.busy) {
-            offload_busy.fetch_add(1, std::memory_order_relaxed);
-            WaitWindowsFree(window, READBACK_WINDOW_SIZE);
-        } else {
+        if (direct_read && DirectReadback(window, Common::AlignDown(device_addr, BYTES_PER_PAGE))) {
             ++attempts;
-            if (job.copies.empty()) {
-                offload_empty.fetch_add(1, std::memory_order_relaxed);
+        } else {
+            Readback job{.window = window};
+            liverpool->SendCommand<true>([this, &job] { RecordReadback(job); });
+            if (job.busy) {
+                offload_busy.fetch_add(1, std::memory_order_relaxed);
+                WaitWindowsFree(window, READBACK_WINDOW_SIZE);
             } else {
-                const auto start = std::chrono::steady_clock::now();
-                scheduler.GetWorkSemaphore()->Wait(job.tick);
-                const auto waited = std::chrono::steady_clock::now() - start;
-                offload_waits.fetch_add(1, std::memory_order_relaxed);
-                offload_wait_ns.fetch_add(
-                    std::chrono::duration_cast<std::chrono::nanoseconds>(waited).count(),
-                    std::memory_order_relaxed);
-                FinishReadback(job);
+                ++attempts;
+                if (job.copies.empty()) {
+                    offload_empty.fetch_add(1, std::memory_order_relaxed);
+                } else {
+                    WaitForTick(job.tick);
+                    FinishReadback(job);
+                }
             }
         }
         bool resolved = true;
@@ -488,6 +493,94 @@ void BufferCache::FinishReadback(const Readback& job) {
     liverpool->SendCommand([this, staging = job.staging] { staging_pool.FreeDeferred(staging); });
 }
 
+void BufferCache::WaitForTick(u64 tick) {
+    if (scheduler.GetWorkSemaphore()->IsFree(tick)) {
+        return;
+    }
+    const auto start = std::chrono::steady_clock::now();
+    scheduler.GetWorkSemaphore()->Wait(tick);
+    const auto waited = std::chrono::steady_clock::now() - start;
+    offload_waits.fetch_add(1, std::memory_order_relaxed);
+    offload_wait_ns.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(waited).count(),
+                              std::memory_order_relaxed);
+}
+
+bool BufferCache::DirectReadback(VAddr window, VAddr page) {
+    u64 page_tick = 0;
+    {
+        std::scoped_lock lk{gpu_writes_mutex};
+        gpu_writes.ForEachInRange(page, BYTES_PER_PAGE, [&](VAddr, VAddr, u64 tick) {
+            page_tick = std::max(page_tick, tick);
+        });
+    }
+    if (page_tick == 0) {
+        return false;
+    }
+    if (page_tick >= scheduler.CurrentTick()) {
+        offload_flush_requests.fetch_add(1, std::memory_order_relaxed);
+        liverpool->SendCommand(
+            [this, page_tick] { liverpool->GetRasterizer()->RequestFlush(page_tick); });
+    }
+    WaitForTick(page_tick);
+    // Owned only now, so the GPU thread never waits for a thread that waits for it.
+    AcquireWindows(window, READBACK_WINDOW_SIZE);
+    const u64 known = scheduler.GetWorkSemaphore()->KnownGpuTick();
+    boost::container::small_vector<Range, 16> islands;
+    u64 total_size = 0;
+    {
+        std::scoped_lock lk{gpu_writes_mutex};
+        gpu_writes.ForEachInRange(window, READBACK_WINDOW_SIZE,
+                                  [&](VAddr begin, VAddr end, u64 tick) {
+                                      if (tick <= known) {
+                                          islands.push_back({begin, end - begin});
+                                          total_size += end - begin;
+                                      }
+                                  });
+    }
+    bool copied = total_size <= direct_read_limit;
+    for (auto it = islands.begin(); copied && it != islands.end(); ++it) {
+        copied = DirectRead(it->addr, it->size);
+    }
+    if (!copied) {
+        ReleaseWindows(window, READBACK_WINDOW_SIZE);
+        return false;
+    }
+    offload_direct.fetch_add(1, std::memory_order_relaxed);
+    offload_direct_bytes.fetch_add(total_size, std::memory_order_relaxed);
+    ConsumeGpuWrites(window, READBACK_WINDOW_SIZE, known);
+    ReleaseWindows(window, READBACK_WINDOW_SIZE);
+    return true;
+}
+
+bool BufferCache::DirectRead(VAddr device_addr, u64 size) {
+    while (size != 0) {
+        const u8* src;
+        u64 chunk;
+        {
+            std::scoped_lock lk{arena_mutex};
+            const auto it = resident_ranges.Find(device_addr >> block_shift);
+            if (it == resident_ranges.end() || !it->host) {
+                return false;
+            }
+            src =
+                it->host + (it->offset << block_shift) + (device_addr - (it->start << block_shift));
+            chunk = std::min(size, (it->end << block_shift) - device_addr);
+        }
+        Core::MemoryManager::BackingSpan spans[4];
+        const u32 num_spans = memory->ResolveBackingSpans(device_addr, chunk, spans, 4, false);
+        if (num_spans == 0) {
+            return false;
+        }
+        for (u32 i = 0; i < num_spans; ++i) {
+            Common::StreamCopy(spans[i].ptr, src, spans[i].size);
+            src += spans[i].size;
+        }
+        device_addr += chunk;
+        size -= chunk;
+    }
+    return true;
+}
+
 BufferCache::OffloadStats BufferCache::DrainOffloadStats() {
     const auto take = [](std::atomic<u64>& counter) {
         return counter.exchange(0, std::memory_order_relaxed);
@@ -502,6 +595,9 @@ BufferCache::OffloadStats BufferCache::DrainOffloadStats() {
         .waits = take(offload_waits),
         .wait_ns = take(offload_wait_ns),
         .restamps = take(offload_restamps),
+        .direct = take(offload_direct),
+        .direct_bytes = take(offload_direct_bytes),
+        .flush_requests = take(offload_flush_requests),
     };
     std::scoped_lock lk{gpu_writes_mutex};
     stats.segments = gpu_writes.Size();

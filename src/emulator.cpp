@@ -557,6 +557,8 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
     LOG_INFO(Config, "GPU cleanSyncPeek: {}", EmulatorSettings.IsCleanSyncPeek());
     LOG_INFO(Config, "GPU readbackOffload: {}", EmulatorSettings.IsReadbackOffload());
     LOG_INFO(Config, "GPU arenaMemoryType: {}", EmulatorSettings.GetArenaMemoryType());
+    LOG_INFO(Config, "GPU readbackDirectRead: {}", EmulatorSettings.IsReadbackDirectRead());
+    LOG_INFO(Config, "GPU readbackDirectMaxKb: {}", EmulatorSettings.GetReadbackDirectMaxKb());
     LOG_INFO(Config, "GPU ringDrainFlushDraws: {}", EmulatorSettings.GetRingDrainFlushDraws());
     LOG_INFO(Config, "GPU readbackLinearImages: {}",
              EmulatorSettings.IsReadbackLinearImagesEnabled());
