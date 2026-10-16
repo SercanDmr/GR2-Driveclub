@@ -607,7 +607,9 @@ bool BufferCache::DirectReadback(VAddr window, VAddr page, bool on_gpu_thread) {
     AcquireWindows(window, READBACK_WINDOW_SIZE);
     const u64 known = scheduler.GetWorkSemaphore()->KnownGpuTick();
     // The island list lives on the signal stack; a window with more retired islands than it
-    // holds takes the GPU thread's copy.
+    // holds takes the GPU thread's copy. After the GPU thread's own flush the stamps above the
+    // known tick belong to the packet still being bound, whose bytes the arena holds as the GPU
+    // left them: they are copied and consumed like the synchronous download does.
     static constexpr size_t MaxIslands = 32;
     boost::container::small_vector<Range, MaxIslands> islands;
     u64 total_size = 0;
@@ -616,7 +618,7 @@ bool BufferCache::DirectReadback(VAddr window, VAddr page, bool on_gpu_thread) {
         std::scoped_lock lk{gpu_writes_mutex};
         gpu_writes.ForEachInRange(window, READBACK_WINDOW_SIZE,
                                   [&](VAddr begin, VAddr end, u64 tick) {
-                                      if (tick > known) {
+                                      if (tick > known && !flushed) {
                                           return;
                                       }
                                       if (islands.size() == MaxIslands) {
@@ -641,7 +643,7 @@ bool BufferCache::DirectReadback(VAddr window, VAddr page, bool on_gpu_thread) {
     }
     // After the GPU thread's own flush and wait every recorded write has executed, and the writes
     // of a packet still being bound were moved into the new batch, which marks them again at its
-    // commit: the consume takes the current tick, as the synchronous download does.
+    // commit: the consume takes the current tick.
     ConsumeGpuWrites(window, READBACK_WINDOW_SIZE, flushed ? scheduler.CurrentTick() : known);
     ReleaseWindows(window, READBACK_WINDOW_SIZE);
     return true;
