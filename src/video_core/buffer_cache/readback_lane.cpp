@@ -138,23 +138,23 @@ void ReadbackLanes::Process(Lane& lane, Job& job) {
 
     // The GPU reached wait_tick before the owner handed the window over, so that wait is already
     // satisfied and legal on the graphics queue as well. The arena's sparse binds signal the bind
-    // semaphore from the graphics queue, which a lane on another queue waits for explicitly.
+    // semaphore from the graphics queue, which a lane on another queue waits for explicitly; before
+    // the first bind submission the value is 0, which the semaphore satisfied at creation.
     const std::array wait_semaphores = {scheduler.GetWorkSemaphore()->Handle(), bind_semaphore};
     const std::array wait_values = {request.wait_tick, request.bind_tick};
     const std::array<vk::PipelineStageFlags, 2> wait_stages = {
         vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eTransfer};
-    const u32 num_waits = request.bind_tick != 0 ? 2u : 1u;
     const vk::Semaphore signal_semaphore = lane.timeline.Handle();
     const u64 signal_tick = lane.timeline.NextTick();
     const vk::TimelineSemaphoreSubmitInfo timeline_si = {
-        .waitSemaphoreValueCount = num_waits,
+        .waitSemaphoreValueCount = 2,
         .pWaitSemaphoreValues = wait_values.data(),
         .signalSemaphoreValueCount = 1,
         .pSignalSemaphoreValues = &signal_tick,
     };
     const vk::SubmitInfo submit_info = {
         .pNext = &timeline_si,
-        .waitSemaphoreCount = num_waits,
+        .waitSemaphoreCount = 2,
         .pWaitSemaphores = wait_semaphores.data(),
         .pWaitDstStageMask = wait_stages.data(),
         .commandBufferCount = 1,

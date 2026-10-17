@@ -42,7 +42,7 @@ public:
         VAddr window;
         u64 wait_tick; ///< Scheduler tick the GPU has reached for the window's writes.
         u64 copy_tick; ///< Writes stamped up to this tick are copied.
-        u64 bind_tick; ///< Bind semaphore value the arena's binds signal; 0 when none were made.
+        u64 bind_tick; ///< Bind semaphore value of the last sparse bind submission.
     };
 
     /// Copies the writes of the request's window into guest memory and returns the byte count,
