@@ -61,6 +61,9 @@ class BufferCache {
     static constexpr u64 STREAM_THRESHOLD = 16_KB;
 
 public:
+    /// A readback serves the GPU writes of one window at a time.
+    static constexpr u64 READBACK_WINDOW_SIZE = 512_KB;
+
     explicit BufferCache(const Vulkan::Instance& instance, Vulkan::Scheduler& scheduler,
                          Vulkan::Runtime& runtime, AmdGpu::Liverpool* liverpool,
                          TextureCache& texture_cache, PageManager& tracker);

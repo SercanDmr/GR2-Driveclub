@@ -33,8 +33,7 @@ class ReadbackLanes {
 public:
     /// One lane per copy queue, or two on the graphics queue.
     explicit ReadbackLanes(const Vulkan::Instance& instance, Vulkan::Scheduler& scheduler,
-                           BufferCache& buffer_cache, vk::Semaphore bind_semaphore,
-                           u64 window_size);
+                           BufferCache& buffer_cache, vk::Semaphore bind_semaphore);
     ~ReadbackLanes();
 
     struct Request {
@@ -64,7 +63,6 @@ private:
     Vulkan::Scheduler& scheduler;
     BufferCache& buffer_cache;
     vk::Semaphore bind_semaphore;
-    u64 window_size;
     std::mutex mutex;
     std::condition_variable_any job_cv;
     std::condition_variable done_cv;

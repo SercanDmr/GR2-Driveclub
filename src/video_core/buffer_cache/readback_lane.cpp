@@ -16,9 +16,9 @@
 namespace VideoCore {
 
 struct ReadbackLanes::Lane {
-    Lane(const Vulkan::Instance& instance, vk::Queue queue_, u32 family, u64 staging_size)
-        : queue{queue_}, timeline{instance},
-          staging{instance, 0, staging_size, MemoryType::HostCached, "Readback lane"} {
+    Lane(const Vulkan::Instance& instance, vk::Queue queue_, u32 family)
+        : queue{queue_}, timeline{instance}, staging{instance, 0, BufferCache::READBACK_WINDOW_SIZE,
+                                                     MemoryType::HostCached, "Readback lane"} {
         const vk::Device device = instance.GetDevice();
         const vk::CommandPoolCreateInfo pool_ci = {
             .flags = vk::CommandPoolCreateFlagBits::eTransient |
@@ -44,10 +44,9 @@ struct ReadbackLanes::Lane {
 };
 
 ReadbackLanes::ReadbackLanes(const Vulkan::Instance& instance_, Vulkan::Scheduler& scheduler_,
-                             BufferCache& buffer_cache_, vk::Semaphore bind_semaphore_,
-                             u64 window_size_)
+                             BufferCache& buffer_cache_, vk::Semaphore bind_semaphore_)
     : instance{instance_}, scheduler{scheduler_}, buffer_cache{buffer_cache_},
-      bind_semaphore{bind_semaphore_}, window_size{window_size_} {
+      bind_semaphore{bind_semaphore_} {
     const auto copy_queues = instance.GetCopyQueues();
     const bool shared = copy_queues.empty();
     const u32 count = shared ? 2 : static_cast<u32>(copy_queues.size());
@@ -55,8 +54,7 @@ ReadbackLanes::ReadbackLanes(const Vulkan::Instance& instance_, Vulkan::Schedule
         const vk::Queue queue = shared ? instance.GetGraphicsQueue() : copy_queues[i];
         const u32 family =
             shared ? instance.GetGraphicsQueueFamilyIndex() : instance.GetCopyQueueFamilyIndex();
-        auto& lane =
-            lanes.emplace_back(std::make_unique<Lane>(instance, queue, family, window_size));
+        auto& lane = lanes.emplace_back(std::make_unique<Lane>(instance, queue, family));
         lane->thread =
             std::jthread([this, lane = lane.get()](std::stop_token stop) { Run(*lane, stop); });
     }
@@ -109,8 +107,9 @@ void ReadbackLanes::Run(Lane& lane, std::stop_token stop) {
 void ReadbackLanes::Process(Lane& lane, Job& job) {
     const Request& request = job.request;
     lane.copies.clear();
-    const u64 total_size = buffer_cache.CollectWrites(request.arena, request.window, window_size,
-                                                      request.copy_tick, lane.copies);
+    const u64 total_size =
+        buffer_cache.CollectWrites(request.arena, request.window, BufferCache::READBACK_WINDOW_SIZE,
+                                   request.copy_tick, lane.copies);
     job.copied = total_size;
     if (total_size == 0) {
         return;

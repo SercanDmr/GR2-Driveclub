@@ -35,9 +35,8 @@ namespace VideoCore {
 static constexpr size_t GDS_BUFFER_SIZE = 64_KB;
 static constexpr size_t NULL_INDEX_BUFFER_SIZE = 16;
 static constexpr size_t STREAM_BUFFER_SIZE = 128_MB;
-static constexpr u64 READBACK_WINDOW_SIZE = 512_KB;
 // Every readback window lies inside one tracker region.
-static_assert(HIGHER_PAGE_SIZE % READBACK_WINDOW_SIZE == 0);
+static_assert(HIGHER_PAGE_SIZE % BufferCache::READBACK_WINDOW_SIZE == 0);
 constexpr std::optional<u32> CmaskColorExpandedValue(u32 num_samples) {
     switch (num_samples) {
     case 1:
@@ -139,8 +138,8 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
         // Lanes serve the windows a direct read cannot; an integrated GPU with host visible
         // arenas has none.
         if (!(arena_host_type_index && instance.IsIntegrated())) {
-            copy_lanes = std::make_unique<ReadbackLanes>(
-                instance, scheduler, *this, memory_semaphore.Handle(), READBACK_WINDOW_SIZE);
+            copy_lanes = std::make_unique<ReadbackLanes>(instance, scheduler, *this,
+                                                         memory_semaphore.Handle());
         }
     }
     LOG_INFO(Render_Vulkan, "Readback arena memory type {}, host visible: {}",
