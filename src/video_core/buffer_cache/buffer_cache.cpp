@@ -149,15 +149,10 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
             arena_host_visible = true;
         }
         direct_read = arena_host_visible && EmulatorSettings.IsReadbackDirectRead();
-        // The check reads the mapping the direct read would, next to the GPU thread's copy.
-        verify_direct = arena_host_visible && EmulatorSettings.IsReadbackVerify();
-        if (verify_direct) {
-            direct_read = false;
-        }
         // Lanes serve the windows a direct read cannot; an integrated GPU with host visible
-        // arenas has none, and the verify check wants the GPU thread's copy.
+        // arenas has none.
         const u32 num_lanes = std::min<u32>(EmulatorSettings.GetReadbackCopyLanes(), 4);
-        if (num_lanes != 0 && !verify_direct && !(arena_host_visible && instance.IsIntegrated())) {
+        if (num_lanes != 0 && !(arena_host_visible && instance.IsIntegrated())) {
             copy_lanes = std::make_unique<ReadbackLanes>(instance, scheduler, *this,
                                                          memory_semaphore.Handle(), num_lanes,
                                                          READBACK_WINDOW_SIZE);
@@ -500,31 +495,6 @@ void BufferCache::RecordReadback(Readback& job) {
 
 void BufferCache::FinishReadback(const Readback& job) {
     job.staging.Invalidate();
-    if (verify_direct) {
-        u64 bad = 0;
-        for (const auto& copy : job.copies) {
-            const VAddr copy_addr = job.arena_base + copy.srcOffset;
-            // A write recorded after the copy may have retired already and show in the mapping.
-            bool newer = false;
-            {
-                std::scoped_lock lk{gpu_writes_mutex};
-                gpu_writes.ForEachInRange(copy_addr, copy.size, [&](VAddr, VAddr, u64 tick) {
-                    newer |= tick > job.tick;
-                });
-            }
-            if (newer) {
-                continue;
-            }
-            bad += VerifyAgainstMapping(
-                copy_addr, job.staging.mapped + (copy.dstOffset - job.staging.offset), copy.size);
-        }
-        verify_windows.fetch_add(1, std::memory_order_relaxed);
-        if (bad != 0) {
-            verify_bad.fetch_add(bad, std::memory_order_relaxed);
-            VAddr none = 0;
-            verify_first_bad.compare_exchange_strong(none, job.window, std::memory_order_relaxed);
-        }
-    }
     // The write-back runs ahead of the consume: the window is owned, so a write marked meanwhile
     // keeps its pages GPU modified and the guest never reads them.
     for (const auto& copy : job.copies) {
@@ -536,45 +506,6 @@ void BufferCache::FinishReadback(const Readback& job) {
     ReleaseWindows(job.window, READBACK_WINDOW_SIZE);
     // The staging pool belongs to the GPU thread.
     liverpool->SendCommand([this, staging = job.staging] { staging_pool.FreeDeferred(staging); });
-}
-
-u64 BufferCache::VerifyAgainstMapping(VAddr device_addr, const u8* copied, u64 size) {
-    u64 bad = 0;
-    while (size != 0) {
-        const u8* mapped;
-        u64 chunk;
-        {
-            std::scoped_lock lk{arena_mutex};
-            const auto it = resident_ranges.Find(device_addr >> block_shift);
-            if (it == resident_ranges.end() || !it->host) {
-                return bad;
-            }
-            mapped =
-                it->host + (it->offset << block_shift) + (device_addr - (it->start << block_shift));
-            chunk = std::min(size, (it->end << block_shift) - device_addr);
-        }
-        alignas(32) u8 line[4_KB];
-        for (u64 done = 0; done < chunk;) {
-            const u64 n = std::min<u64>(chunk - done, sizeof(line));
-            Common::StreamCopy(line, mapped + done, n);
-            for (u64 i = 0; i < n; ++i) {
-                bad += line[i] != copied[done + i];
-            }
-            done += n;
-        }
-        device_addr += chunk;
-        copied += chunk;
-        size -= chunk;
-    }
-    return bad;
-}
-
-BufferCache::VerifyStats BufferCache::DrainVerifyStats() {
-    return VerifyStats{
-        .windows = verify_windows.exchange(0, std::memory_order_relaxed),
-        .bad = verify_bad.exchange(0, std::memory_order_relaxed),
-        .first_bad = verify_first_bad.load(std::memory_order_relaxed),
-    };
 }
 
 const Buffer* BufferCache::ArenaOf(VAddr device_addr, u64& bind_tick) {

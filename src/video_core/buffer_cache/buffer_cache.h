@@ -188,14 +188,6 @@ public:
     };
     OffloadStats DrainOffloadStats();
 
-    /// readback_verify telemetry: windows compared, differing bytes, first window that differed.
-    struct VerifyStats {
-        u64 windows;
-        u64 bad;
-        VAddr first_bad;
-    };
-    VerifyStats DrainVerifyStats();
-
 private:
     struct ArenaBinds {
         const Buffer* arena;
@@ -252,10 +244,6 @@ private:
     /// The arena holding an address and the bind semaphore value its binds signal, for the copy
     /// lanes; nullptr while binds of the arena are still queued for the next submit.
     const Buffer* ArenaOf(VAddr device_addr, u64& bind_tick);
-
-    /// readback_verify: compares a GPU copied range with the arena's host mapping and returns the
-    /// count of differing bytes.
-    u64 VerifyAgainstMapping(VAddr device_addr, const u8* copied, u64 size);
 
     /// Records and submits the copy of the GPU written ranges of a readback window, which the
     /// faulting thread then owns. Runs on the GPU thread.
@@ -357,10 +345,6 @@ private:
     bool readback_offload{};
     bool direct_read{};
     u64 direct_read_limit{};
-    bool verify_direct{};
-    std::atomic<u64> verify_windows{};
-    std::atomic<u64> verify_bad{};
-    std::atomic<VAddr> verify_first_bad{};
     std::mutex window_mutex;
     std::condition_variable window_cv;
     boost::container::small_vector<Range, 8> window_owners;
