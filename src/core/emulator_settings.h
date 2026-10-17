@@ -485,9 +485,9 @@ struct GPUSettings {
     // the locked walk over them when none is set.
     Setting<bool> clean_sync_peek{true};
     // The faulting thread performs its readback and the GPU command thread never waits for it:
-    // retired GPU writes are read straight out of a host visible arena, otherwise the GPU thread
-    // copies the window and the faulting thread waits for the copy; a GPU write marked in the
-    // window meanwhile keeps its pages GPU modified.
+    // retired GPU writes are read straight out of a host visible arena, otherwise a copy lane with
+    // a queue of its own copies them; a GPU write marked in the window meanwhile keeps its pages
+    // GPU modified.
     Setting<bool> readback_offload{false};
     // Flush the open graphics batch early when it already holds this many draws and every batch
     // submitted so far has retired (the ring runs dry while the rest of the batch is recorded).

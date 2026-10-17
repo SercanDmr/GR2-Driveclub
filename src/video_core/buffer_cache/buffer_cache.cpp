@@ -147,9 +147,6 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
             copy_lanes = std::make_unique<ReadbackLanes>(
                 instance, scheduler, *this, memory_semaphore.Handle(), READBACK_WINDOW_SIZE);
         }
-        // A discrete GPU takes a direct read of up to 256 KiB per window and a lane copy above
-        // that; an integrated GPU reads the whole window.
-        direct_read_limit = instance.IsIntegrated() ? READBACK_WINDOW_SIZE : 256_KB;
     }
     LOG_INFO(Render_Vulkan, "Readback arena memory type {}, host visible: {}",
              arena_memory_type_index, arena_host_visible);
@@ -200,11 +197,9 @@ void BufferCache::UnmarkRegionAsGpuModified(VAddr device_addr, u64 size, bool is
 
 void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool async,
                              bool assume_locks) {
-    if (readback_offload && !assume_locks && FaultReadback(device_addr, size, is_write)) {
-        return;
-    }
-    if ((arena_host_visible || copy_lanes) && assume_locks && !async &&
-        GpuThreadReadback(device_addr, size, is_write)) {
+    if (readback_offload && !async &&
+        (assume_locks ? GpuThreadReadback(device_addr, size, is_write)
+                      : FaultReadback(device_addr, size, is_write))) {
         return;
     }
     const auto flush_request = [this, device_addr, size, is_write, async] {
@@ -424,8 +419,7 @@ bool BufferCache::FaultReadback(VAddr device_addr, u64 size, bool is_write) {
     // which copies and unmarks in one GPU thread command.
     u32 attempts = 0;
     while (attempts < 2) {
-        if ((arena_host_visible || copy_lanes) &&
-            DirectReadback(window, Common::AlignDown(device_addr, BYTES_PER_PAGE), false)) {
+        if (DirectReadback(window, Common::AlignDown(device_addr, BYTES_PER_PAGE), false)) {
             ++attempts;
         } else {
             Readback job{.window = window};
@@ -609,7 +603,6 @@ bool BufferCache::DirectReadback(VAddr window, VAddr page, bool on_gpu_thread) {
                                               total_size += end - begin;
                                           });
             }
-            copied = total_size <= direct_read_limit;
             for (auto it = islands.begin(); copied && it != islands.end(); ++it) {
                 copied = DirectRead(it->addr, it->size);
             }
