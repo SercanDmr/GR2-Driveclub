@@ -573,7 +573,9 @@ void Rasterizer::EliminateFastClear() {
     ScopeMarkerEnd();
 }
 
-// Commits the GPU writes a packet marked while binding on every exit of the packet.
+// Commits the GPU writes a packet marked while binding on every exit of the packet. The record
+// commits itself before the flush polls that follow it, which would otherwise move the writes
+// just recorded into the next batch; the guard covers the exits before the record.
 struct GpuWriteCommit {
     VideoCore::BufferCache& buffer_cache;
     ~GpuWriteCommit() {
