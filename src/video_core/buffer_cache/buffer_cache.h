@@ -7,6 +7,7 @@
 #include <condition_variable>
 #include <deque>
 #include <mutex>
+#include <optional>
 #include <vector>
 #include <boost/container/small_vector.hpp>
 
@@ -321,11 +322,12 @@ private:
     /// memory_semaphore value of the last sparse bind submission. Guarded by arena_mutex.
     u64 last_bind_tick{};
 
-    u32 arena_memory_type_index{};
-    /// Plain device memory, the arena type without the offload and the fallback once the host
-    /// visible heap is spent.
+    /// Host visible device memory for the arenas; nullopt without the offload or without a type
+    /// whose heap is the video memory.
+    std::optional<u32> arena_host_type_index;
+    /// Plain device memory, the arena type without a host visible one and the fallback once the
+    /// host visible heap is spent.
     u32 arena_device_type_index{};
-    bool arena_host_visible{};
     /// Set once a host visible allocation failed; later allocations take device memory.
     bool arena_host_spent{};
     u32 block_size{};

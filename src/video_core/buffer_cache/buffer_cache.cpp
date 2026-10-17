@@ -133,22 +133,19 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
         FindMemoryType(instance.GetMemoryProperties(), vk::MemoryPropertyFlagBits::eDeviceLocal,
                        reqs.memoryTypeBits)
             .value();
-    arena_memory_type_index = arena_device_type_index;
     readback_offload = EmulatorSettings.IsReadbackOffload();
     if (readback_offload) {
-        if (const auto host_type = FindHostVisibleArenaType(instance, reqs.memoryTypeBits)) {
-            arena_memory_type_index = *host_type;
-            arena_host_visible = true;
-        }
+        arena_host_type_index = FindHostVisibleArenaType(instance, reqs.memoryTypeBits);
         // Lanes serve the windows a direct read cannot; an integrated GPU with host visible
         // arenas has none.
-        if (!(arena_host_visible && instance.IsIntegrated())) {
+        if (!(arena_host_type_index && instance.IsIntegrated())) {
             copy_lanes = std::make_unique<ReadbackLanes>(
                 instance, scheduler, *this, memory_semaphore.Handle(), READBACK_WINDOW_SIZE);
         }
     }
     LOG_INFO(Render_Vulkan, "Readback arena memory type {}, host visible: {}",
-             arena_memory_type_index, arena_host_visible);
+             arena_host_type_index.value_or(arena_device_type_index),
+             arena_host_type_index.has_value());
 
     const u64 bda_pagetable_size =
         (blocks_per_arena_page * NUM_ARENA_PAGES) * sizeof(vk::DeviceAddress);
@@ -549,7 +546,7 @@ bool BufferCache::DirectReadback(VAddr device_addr) {
     const VAddr window_end = window + READBACK_WINDOW_SIZE;
     u64 total_size = 0;
     bool copied = false;
-    if (arena_host_visible) {
+    if (arena_host_type_index) {
         // The islands are collected and copied in batches, the list living on the signal stack.
         static constexpr size_t BatchIslands = 32;
         boost::container::small_vector<Range, BatchIslands> islands;
@@ -925,16 +922,16 @@ void BufferCache::EnsureResident(const Buffer* arena, u64 first_block, u64 last_
     const vk::MemoryAllocateFlagsInfo alloc_flags = {
         .flags = vk::MemoryAllocateFlagBits::eDeviceAddress,
     };
-    const bool host_type = arena_host_visible && !arena_host_spent;
+    const bool host_type = arena_host_type_index && !arena_host_spent;
     vk::MemoryAllocateInfo alloc_info = {
         .pNext = &alloc_flags,
         .allocationSize = resident_blocks << block_shift,
-        .memoryTypeIndex = host_type ? arena_memory_type_index : arena_device_type_index,
+        .memoryTypeIndex = host_type ? *arena_host_type_index : arena_device_type_index,
     };
     const auto device = instance.GetDevice();
     auto allocation = device.allocateMemory(alloc_info);
     if (allocation.result != vk::Result::eSuccess && host_type &&
-        arena_memory_type_index != arena_device_type_index) {
+        *arena_host_type_index != arena_device_type_index) {
         LOG_WARNING(Render_Vulkan,
                     "Host visible arena memory spent, arenas continue in device memory");
         arena_host_spent = true;
