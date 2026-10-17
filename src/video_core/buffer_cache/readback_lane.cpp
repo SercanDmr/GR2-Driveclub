@@ -17,9 +17,8 @@
 namespace VideoCore {
 
 struct ReadbackLanes::Lane {
-    Lane(const Vulkan::Instance& instance, vk::Queue queue_, u32 family, bool shared_queue_,
-         u64 staging_size)
-        : queue{queue_}, shared_queue{shared_queue_}, timeline{instance},
+    Lane(const Vulkan::Instance& instance, vk::Queue queue_, u32 family, u64 staging_size)
+        : queue{queue_}, timeline{instance},
           staging{instance, 0, staging_size, MemoryType::HostCached, "Readback lane"} {
         const vk::Device device = instance.GetDevice();
         const vk::CommandPoolCreateInfo pool_ci = {
@@ -37,8 +36,6 @@ struct ReadbackLanes::Lane {
     }
 
     vk::Queue queue;
-    /// The graphics queue is the scheduler's: its submits take the scheduler's submit lock.
-    bool shared_queue;
     Vulkan::Semaphore timeline;
     vk::UniqueCommandPool pool;
     vk::CommandBuffer cmdbuf;
@@ -59,8 +56,8 @@ ReadbackLanes::ReadbackLanes(const Vulkan::Instance& instance_, Vulkan::Schedule
         const vk::Queue queue = shared ? instance.GetGraphicsQueue() : copy_queues[i];
         const u32 family =
             shared ? instance.GetGraphicsQueueFamilyIndex() : instance.GetCopyQueueFamilyIndex();
-        auto& lane = lanes.emplace_back(
-            std::make_unique<Lane>(instance, queue, family, shared, window_size));
+        auto& lane =
+            lanes.emplace_back(std::make_unique<Lane>(instance, queue, family, window_size));
         lane->thread =
             std::jthread([this, lane = lane.get()](std::stop_token stop) { Run(*lane, stop); });
     }
@@ -163,8 +160,10 @@ void ReadbackLanes::Process(Lane& lane, Job& job) {
         .pSignalSemaphores = &signal_semaphore,
     };
     {
+        // Without a transfer family the lanes share the scheduler's graphics queue, whose submits
+        // take the scheduler's submit lock.
         std::unique_lock lk{Vulkan::Scheduler::submit_mutex, std::defer_lock};
-        if (lane.shared_queue) {
+        if (instance.GetCopyQueues().empty()) {
             lk.lock();
         }
         Vulkan::Check(lane.queue.submit(submit_info));
