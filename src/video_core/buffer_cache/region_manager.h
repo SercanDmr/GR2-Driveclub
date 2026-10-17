@@ -182,8 +182,10 @@ public:
     template <StateOp cpu_op, StateOp gpu_op>
     void ChangeRegionStateMasked(const std::array<u64, NUM_REGION_WORDS>& pages) {
         bool update_watchers{};
-        RegionBits write_prot;
-        RegionBits read_prot;
+        // The watcher update reads every word between the first and the last changed one, and
+        // only the words the mask selects are computed below.
+        RegionBits write_prot{};
+        RegionBits read_prot{};
         Bounds watcher_bounds = MIN_BOUNDS;
         for (u64 index = 0; index < NUM_REGION_WORDS; ++index) {
             if (pages[index] != 0) {
