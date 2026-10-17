@@ -203,17 +203,6 @@ struct PageManager::Impl {
         const u64 page_start = bounds.start_word * PAGES_PER_WORD + bounds.start_page;
         const u64 page_end = bounds.end_word * PAGES_PER_WORD + bounds.end_page + 1;
 
-        // A GPU written buffer over memory the guest mapped without GPU access: the pages get
-        // their states here, as images do in UpdatePageWatchers, so a later untrack finds the
-        // watcher the track counted.
-        if (write_op == PageOp::Track || read_op == PageOp::Track) {
-            const VAddr begin = (base_page + page_start) << PM_PAGE_BITS;
-            const VAddr end = (base_page + page_end) << PM_PAGE_BITS;
-            if (!rasterizer->IsMapped(begin, end - begin)) {
-                EnsurePages(begin, end);
-            }
-        }
-
         Core::MemoryPermission perms{};
         u64 range_begin = base_page + page_start;
         u64 range_pages = 0;
