@@ -1106,12 +1106,12 @@ void Rasterizer::EmitSkipcacheTelemetry(Skipcache::Framework& skipcache) {
     ws = {};
     if (const auto os = buffer_cache.DrainOffloadStats(); os.faults || os.copies || os.restamps) {
         LOG_INFO(Render_Skipcache,
-                 "[SkipCache] OFFLOAD faults={} direct={}/{}KiB clean={} lane={} flushreq={} "
-                 "copies={} busy={} empty={} stale={} orphans={} waited={}/{}ms restamps={} "
-                 "segments={} per300f",
+                 "[SkipCache] OFFLOAD faults={} direct={}/{}KiB clean={} lane={}/{}KiB "
+                 "flushreq={} copies={} busy={} empty={} stale={} orphans={} waited={}/{}ms "
+                 "restamps={} segments={} per300f",
                  os.faults, os.direct, os.direct_bytes / 1024, os.clean, os.lane_copies,
-                 os.flush_requests, os.copies, os.busy, os.empty, os.stale, os.orphans, os.waits,
-                 os.wait_ns / 1000000, os.restamps, os.segments);
+                 os.lane_bytes / 1024, os.flush_requests, os.copies, os.busy, os.empty, os.stale,
+                 os.orphans, os.waits, os.wait_ns / 1000000, os.restamps, os.segments);
     }
     if (const auto vs = buffer_cache.DrainVerifyStats(); vs.windows != 0) {
         LOG_INFO(Render_Skipcache, "[SkipCache] VERIFY windows={} bad={} first_bad={:#x} per300f",

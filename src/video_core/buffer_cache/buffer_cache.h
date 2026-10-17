@@ -182,6 +182,7 @@ public:
         /// Direct readbacks that found their window consumed by an earlier owner.
         u64 clean;
         u64 lane_copies;
+        u64 lane_bytes;
         u64 flush_requests;
         u64 segments;
     };
@@ -202,6 +203,7 @@ private:
     };
 
     ArenaBinds* BindsForArena(const Buffer* arena) {
+        std::scoped_lock lk{arena_mutex};
         auto it = std::ranges::find(pending_binds, arena, &ArenaBinds::arena);
         if (it != pending_binds.end()) {
             return std::addressof(*it);
@@ -247,8 +249,9 @@ private:
     /// Waits for a submitted tick, counting the waits that block.
     void WaitForTick(u64 tick);
 
-    /// The arena holding an address, for the faulting threads.
-    const Buffer* ArenaOf(VAddr device_addr);
+    /// The arena holding an address and the bind semaphore value its binds signal, for the copy
+    /// lanes; nullptr while binds of the arena are still queued for the next submit.
+    const Buffer* ArenaOf(VAddr device_addr, u64& bind_tick);
 
     /// readback_verify: compares a GPU copied range with the arena's host mapping and returns the
     /// count of differing bytes.
@@ -326,10 +329,12 @@ private:
             return {{a, b}, memory, offset + (a - start), host};
         }
     };
-    /// Guards resident_ranges between the GPU thread, which grows it, and the faulting threads,
-    /// which look blocks up.
+    /// Guards resident_ranges, address_space and pending_binds between the GPU thread, which
+    /// grows them, and the faulting threads, which look arenas and blocks up.
     std::mutex arena_mutex;
     IntervalList<Backing> resident_ranges;
+    /// memory_semaphore value of the last sparse bind submission. Guarded by arena_mutex.
+    u64 last_bind_tick{};
 
     u32 arena_memory_type_index{};
     /// Plain device memory, the arena type without the offload and the fallback once the host
@@ -373,6 +378,7 @@ private:
     std::atomic<u64> offload_direct_bytes{};
     std::atomic<u64> offload_clean{};
     std::atomic<u64> offload_lane_copies{};
+    std::atomic<u64> offload_lane_bytes{};
     std::atomic<u64> offload_flush_requests{};
     /// Last member: the lane threads stop before anything they use goes away.
     std::unique_ptr<ReadbackLanes> copy_lanes;

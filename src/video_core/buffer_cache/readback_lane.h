@@ -6,6 +6,7 @@
 #include <condition_variable>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <vector>
 #include <boost/container/small_vector.hpp>
@@ -31,33 +32,42 @@ struct Buffer;
 class ReadbackLanes {
 public:
     explicit ReadbackLanes(const Vulkan::Instance& instance, Vulkan::Scheduler& scheduler,
-                           BufferCache& buffer_cache, u32 num_lanes, u64 window_size);
+                           BufferCache& buffer_cache, vk::Semaphore bind_semaphore, u32 num_lanes,
+                           u64 window_size);
     ~ReadbackLanes();
 
-    /// Copies the writes of the window stamped up to copy_tick into guest memory once the GPU has
-    /// reached wait_tick, and returns when they landed. The caller owns the window.
-    void Copy(const Buffer* arena, VAddr window, u64 wait_tick, u64 copy_tick);
+    struct Request {
+        const Buffer* arena;
+        VAddr window;
+        u64 wait_tick; ///< Scheduler tick the GPU has reached for the window's writes.
+        u64 copy_tick; ///< Writes stamped up to this tick are copied.
+        u64 bind_tick; ///< Bind semaphore value the arena's binds signal; 0 when none were made.
+    };
+
+    /// Copies the writes of the request's window into guest memory and returns the byte count,
+    /// or nothing while the lanes shut down. The caller owns the window.
+    std::optional<u64> Copy(const Request& request);
 
 private:
     struct Job {
-        const Buffer* arena;
-        VAddr window;
-        u64 wait_tick;
-        u64 copy_tick;
+        Request request;
+        u64 copied;
         bool done;
     };
     struct Lane;
 
     void Run(Lane& lane, std::stop_token stop);
-    void Process(Lane& lane, const Job& job);
+    void Process(Lane& lane, Job& job);
 
     const Vulkan::Instance& instance;
     Vulkan::Scheduler& scheduler;
     BufferCache& buffer_cache;
+    vk::Semaphore bind_semaphore;
     std::mutex mutex;
     std::condition_variable_any job_cv;
     std::condition_variable done_cv;
     boost::container::small_vector<Job*, 8> pending;
+    bool stopping{};
     std::vector<std::unique_ptr<Lane>> lanes;
 };
 

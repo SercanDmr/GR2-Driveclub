@@ -158,7 +158,8 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
         // arenas has none, and the verify check wants the GPU thread's copy.
         const u32 num_lanes = std::min<u32>(EmulatorSettings.GetReadbackCopyLanes(), 4);
         if (num_lanes != 0 && !verify_direct && !(arena_host_visible && instance.IsIntegrated())) {
-            copy_lanes = std::make_unique<ReadbackLanes>(instance, scheduler, *this, num_lanes,
+            copy_lanes = std::make_unique<ReadbackLanes>(instance, scheduler, *this,
+                                                         memory_semaphore.Handle(), num_lanes,
                                                          READBACK_WINDOW_SIZE);
         }
         const u64 limit_kb = EmulatorSettings.GetReadbackDirectMaxKb();
@@ -576,9 +577,16 @@ BufferCache::VerifyStats BufferCache::DrainVerifyStats() {
     };
 }
 
-const Buffer* BufferCache::ArenaOf(VAddr device_addr) {
+const Buffer* BufferCache::ArenaOf(VAddr device_addr, u64& bind_tick) {
     std::scoped_lock lk{arena_mutex};
-    return address_space[device_addr >> ARENA_PAGE_BITS];
+    const Buffer* arena = address_space[device_addr >> ARENA_PAGE_BITS];
+    // A migrated arena has its blocks bound again by the next submit; until then a copy from it
+    // would read unbound ranges.
+    if (std::ranges::find(pending_binds, arena, &ArenaBinds::arena) != pending_binds.end()) {
+        return nullptr;
+    }
+    bind_tick = last_bind_tick;
+    return arena;
 }
 
 u64 BufferCache::CollectRetiredWrites(const Buffer* arena, VAddr window, u64 tick,
@@ -698,9 +706,17 @@ bool BufferCache::DirectReadback(VAddr window, VAddr page, bool on_gpu_thread) {
     } else if (copy_lanes) {
         // The lane copies the whole window; what a direct read wrote before giving up is the same
         // data.
-        copy_lanes->Copy(ArenaOf(window), window, known, copy_tick);
-        offload_lane_copies.fetch_add(1, std::memory_order_relaxed);
-        copied = true;
+        u64 bind_tick = 0;
+        if (const Buffer* arena = ArenaOf(window, bind_tick)) {
+            const auto lane_bytes = copy_lanes->Copy({arena, window, known, copy_tick, bind_tick});
+            if (lane_bytes && *lane_bytes != 0) {
+                offload_lane_copies.fetch_add(1, std::memory_order_relaxed);
+                offload_lane_bytes.fetch_add(*lane_bytes, std::memory_order_relaxed);
+            } else if (lane_bytes) {
+                offload_clean.fetch_add(1, std::memory_order_relaxed);
+            }
+            copied = lane_bytes.has_value();
+        }
     }
     if (!copied) {
         ReleaseWindows(window, READBACK_WINDOW_SIZE);
@@ -758,6 +774,7 @@ BufferCache::OffloadStats BufferCache::DrainOffloadStats() {
         .direct_bytes = take(offload_direct_bytes),
         .clean = take(offload_clean),
         .lane_copies = take(offload_lane_copies),
+        .lane_bytes = take(offload_lane_bytes),
         .flush_requests = take(offload_flush_requests),
     };
     std::scoped_lock lk{gpu_writes_mutex};
@@ -1271,7 +1288,9 @@ void BufferCache::SubmitPendingArenaBinds(Vulkan::SubmitInfo& info) {
     auto submit_result = instance.GetGraphicsQueue().bindSparse(sparse_info);
     ASSERT_MSG(submit_result != vk::Result::eErrorDeviceLost, "Device lost during submit");
 
+    std::scoped_lock lk{arena_mutex};
     pending_binds.clear();
+    last_bind_tick = signal_tick;
 }
 
 } // namespace VideoCore

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <array>
 #include "common/logging/log.h"
 #include "common/polyfill_thread.h"
 #include "common/thread.h"
@@ -47,8 +48,10 @@ struct ReadbackLanes::Lane {
 };
 
 ReadbackLanes::ReadbackLanes(const Vulkan::Instance& instance_, Vulkan::Scheduler& scheduler_,
-                             BufferCache& buffer_cache_, u32 num_lanes, u64 window_size)
-    : instance{instance_}, scheduler{scheduler_}, buffer_cache{buffer_cache_} {
+                             BufferCache& buffer_cache_, vk::Semaphore bind_semaphore_,
+                             u32 num_lanes, u64 window_size)
+    : instance{instance_}, scheduler{scheduler_}, buffer_cache{buffer_cache_},
+      bind_semaphore{bind_semaphore_} {
     const auto copy_queues = instance.GetCopyQueues();
     const bool shared = copy_queues.empty();
     const u32 count =
@@ -66,14 +69,24 @@ ReadbackLanes::ReadbackLanes(const Vulkan::Instance& instance_, Vulkan::Schedule
              shared ? "the graphics queue" : "a transfer queue family");
 }
 
-ReadbackLanes::~ReadbackLanes() = default;
+ReadbackLanes::~ReadbackLanes() {
+    {
+        std::scoped_lock lk{mutex};
+        stopping = true;
+    }
+    lanes.clear();
+}
 
-void ReadbackLanes::Copy(const Buffer* arena, VAddr window, u64 wait_tick, u64 copy_tick) {
-    Job job{arena, window, wait_tick, copy_tick, false};
+std::optional<u64> ReadbackLanes::Copy(const Request& request) {
+    Job job{request, 0, false};
     std::unique_lock lk{mutex};
+    if (stopping) {
+        return std::nullopt;
+    }
     pending.push_back(&job);
     job_cv.notify_one();
     done_cv.wait(lk, [&] { return job.done; });
+    return job.copied;
 }
 
 void ReadbackLanes::Run(Lane& lane, std::stop_token stop) {
@@ -98,10 +111,12 @@ void ReadbackLanes::Run(Lane& lane, std::stop_token stop) {
     }
 }
 
-void ReadbackLanes::Process(Lane& lane, const Job& job) {
+void ReadbackLanes::Process(Lane& lane, Job& job) {
+    const Request& request = job.request;
     lane.copies.clear();
-    const u64 total_size =
-        buffer_cache.CollectRetiredWrites(job.arena, job.window, job.copy_tick, lane.copies);
+    const u64 total_size = buffer_cache.CollectRetiredWrites(request.arena, request.window,
+                                                             request.copy_tick, lane.copies);
+    job.copied = total_size;
     if (total_size == 0) {
         return;
     }
@@ -109,7 +124,7 @@ void ReadbackLanes::Process(Lane& lane, const Job& job) {
         .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit,
     };
     Vulkan::Check(lane.cmdbuf.begin(begin_info));
-    lane.cmdbuf.copyBuffer(job.arena->Handle(), lane.staging.Handle(), lane.copies);
+    lane.cmdbuf.copyBuffer(request.arena->Handle(), lane.staging.Handle(), lane.copies);
     const vk::MemoryBarrier2 barrier = {
         .srcStageMask = vk::PipelineStageFlagBits2::eTransfer,
         .srcAccessMask = vk::AccessFlagBits2::eTransferWrite,
@@ -122,23 +137,27 @@ void ReadbackLanes::Process(Lane& lane, const Job& job) {
     });
     Vulkan::Check(lane.cmdbuf.end());
 
-    // The GPU reached wait_tick before the owner handed the window over, so the wait is already
-    // satisfied and legal on the graphics queue as well.
-    const vk::Semaphore wait_semaphore = scheduler.GetWorkSemaphore()->Handle();
+    // The GPU reached wait_tick before the owner handed the window over, so that wait is already
+    // satisfied and legal on the graphics queue as well. The arena's sparse binds signal the bind
+    // semaphore from the graphics queue, which a lane on another queue waits for explicitly.
+    const std::array wait_semaphores = {scheduler.GetWorkSemaphore()->Handle(), bind_semaphore};
+    const std::array wait_values = {request.wait_tick, request.bind_tick};
+    const std::array<vk::PipelineStageFlags, 2> wait_stages = {
+        vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eTransfer};
+    const u32 num_waits = request.bind_tick != 0 ? 2u : 1u;
     const vk::Semaphore signal_semaphore = lane.timeline.Handle();
     const u64 signal_tick = lane.timeline.NextTick();
-    const vk::PipelineStageFlags wait_stage = vk::PipelineStageFlagBits::eTransfer;
     const vk::TimelineSemaphoreSubmitInfo timeline_si = {
-        .waitSemaphoreValueCount = 1,
-        .pWaitSemaphoreValues = &job.wait_tick,
+        .waitSemaphoreValueCount = num_waits,
+        .pWaitSemaphoreValues = wait_values.data(),
         .signalSemaphoreValueCount = 1,
         .pSignalSemaphoreValues = &signal_tick,
     };
     const vk::SubmitInfo submit_info = {
         .pNext = &timeline_si,
-        .waitSemaphoreCount = 1,
-        .pWaitSemaphores = &wait_semaphore,
-        .pWaitDstStageMask = &wait_stage,
+        .waitSemaphoreCount = num_waits,
+        .pWaitSemaphores = wait_semaphores.data(),
+        .pWaitDstStageMask = wait_stages.data(),
         .commandBufferCount = 1,
         .pCommandBuffers = &lane.cmdbuf,
         .signalSemaphoreCount = 1,
@@ -156,7 +175,7 @@ void ReadbackLanes::Process(Lane& lane, const Job& job) {
     lane.staging.Invalidate(0, total_size);
     auto* memory = Core::Memory::Instance();
     for (const auto& copy : lane.copies) {
-        memory->TryWriteBacking(std::bit_cast<u8*>(job.arena->CpuAddr() + copy.srcOffset),
+        memory->TryWriteBacking(std::bit_cast<u8*>(request.arena->CpuAddr() + copy.srcOffset),
                                 lane.staging.mapped_data.data() + copy.dstOffset, copy.size);
     }
 }
