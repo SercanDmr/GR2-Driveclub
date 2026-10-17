@@ -209,13 +209,12 @@ void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool as
         VAddr end = Common::AlignUp(device_addr + size, BYTES_PER_PAGE);
         if (!async) {
             // GPU-modified ranges come as many small scattered islands, so a fault's download is
-            // widened to a window around the request; an asynchronous caller owns exactly the
-            // pages of its range.
+            // widened to a window around the request and ends on the page boundary the consume
+            // clears up to; an asynchronous caller owns exactly the pages of its range.
             const VAddr arena_end = arena->cpu_addr + arena->size_bytes;
             start = std::max<VAddr>(Common::AlignDown(device_addr, READBACK_WINDOW_SIZE),
                                     arena->cpu_addr);
-            end = std::min<VAddr>(std::max<VAddr>(start + READBACK_WINDOW_SIZE, device_addr + size),
-                                  arena_end);
+            end = std::min<VAddr>(std::max<VAddr>(start + READBACK_WINDOW_SIZE, end), arena_end);
         }
         DownloadMemory(arena, start, end - start, async);
         if (is_write) {
