@@ -765,9 +765,6 @@ void BufferCache::MarkRegionAsGpuModified(VAddr addr, size_t size) {
     texture_cache.MarkAsMaybeGpuDirty(addr, size);
     StampGpuWrite(addr, size, scheduler.CurrentTick());
     memory_tracker->MarkRegionAsGpuModified(addr, size);
-    if (arena_host_visible) {
-        scheduler.RequestHostReadBarrier();
-    }
 }
 
 void BufferCache::StampGpuWrite(VAddr device_addr, u64 size, u64 tick) {
@@ -783,9 +780,6 @@ void BufferCache::MarkGpuWrite(VAddr device_addr, u64 size) {
 void BufferCache::CommitGpuWrites() {
     if (in_flight.empty()) {
         return;
-    }
-    if (arena_host_visible) {
-        scheduler.RequestHostReadBarrier();
     }
     // A flush between the binds and the record moved the packet into the current batch, and a
     // synchronous download on this thread meanwhile consumed the writes it found: they are
