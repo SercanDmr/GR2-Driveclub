@@ -413,7 +413,7 @@ bool BufferCache::FaultReadback(VAddr device_addr, u64 size, bool is_write) {
     // which copies and unmarks in one GPU thread command.
     u32 attempts = 0;
     while (attempts < 2) {
-        if (DirectReadback(window, Common::AlignDown(device_addr, BYTES_PER_PAGE), false)) {
+        if (DirectReadback(device_addr)) {
             ++attempts;
         } else {
             Readback job{.window = window};
@@ -503,9 +503,7 @@ void BufferCache::WaitForTick(u64 tick) {
 }
 
 bool BufferCache::GpuThreadReadback(VAddr device_addr, u64 size, bool is_write) {
-    const VAddr window = Common::AlignDown(device_addr, READBACK_WINDOW_SIZE);
-    if (device_addr + size > window + READBACK_WINDOW_SIZE ||
-        !DirectReadback(window, Common::AlignDown(device_addr, BYTES_PER_PAGE), true)) {
+    if (!DirectReadback(device_addr)) {
         return false;
     }
     if (is_write) {
@@ -514,7 +512,10 @@ bool BufferCache::GpuThreadReadback(VAddr device_addr, u64 size, bool is_write) 
     return true;
 }
 
-bool BufferCache::DirectReadback(VAddr window, VAddr page, bool on_gpu_thread) {
+bool BufferCache::DirectReadback(VAddr device_addr) {
+    const VAddr window = Common::AlignDown(device_addr, READBACK_WINDOW_SIZE);
+    const VAddr page = Common::AlignDown(device_addr, BYTES_PER_PAGE);
+    const bool on_gpu_thread = liverpool->OnGpuThread();
     u64 page_tick = 0;
     {
         std::scoped_lock lk{gpu_writes_mutex};
@@ -598,13 +599,11 @@ bool BufferCache::DirectReadback(VAddr window, VAddr page, bool on_gpu_thread) {
             copied = lane_bytes.has_value();
         }
     }
-    if (!copied) {
-        ReleaseWindows(window, READBACK_WINDOW_SIZE);
-        return false;
+    if (copied) {
+        ConsumeGpuWrites(window, READBACK_WINDOW_SIZE, copy_tick);
     }
-    ConsumeGpuWrites(window, READBACK_WINDOW_SIZE, copy_tick);
     ReleaseWindows(window, READBACK_WINDOW_SIZE);
-    return true;
+    return copied;
 }
 
 bool BufferCache::DirectRead(VAddr device_addr, u64 size) {
@@ -740,31 +739,28 @@ bool BufferCache::IsRegionGpuModified(VAddr addr, size_t size) {
 void BufferCache::MarkRegionAsGpuModified(VAddr addr, size_t size) {
     // The copy is recorded already, so its write belongs to the open batch.
     texture_cache.MarkAsMaybeGpuDirty(addr, size);
-    StampGpuWrite(addr, size, scheduler.CurrentTick());
+    StampGpuWrite(addr, size);
     memory_tracker->MarkRegionAsGpuModified(addr, size);
 }
 
-void BufferCache::StampGpuWrite(VAddr device_addr, u64 size, u64 tick) {
+void BufferCache::StampGpuWrite(VAddr device_addr, u64 size) {
+    const u64 tick = scheduler.CurrentTick();
     std::scoped_lock lk{gpu_writes_mutex};
     gpu_writes.Set(device_addr, size, tick);
 }
 
 void BufferCache::MarkGpuWrite(VAddr device_addr, u64 size) {
-    StampGpuWrite(device_addr, size, scheduler.CurrentTick());
+    StampGpuWrite(device_addr, size);
     in_flight.push_back({device_addr, size});
 }
 
 void BufferCache::CommitGpuWrites() {
-    if (in_flight.empty()) {
-        return;
-    }
     // A flush between the binds and the record moved the packet into the current batch, and a
     // synchronous download on this thread meanwhile consumed the writes it found: they are
     // stamped and marked again.
     if (in_flight_moved) {
-        const u64 tick = scheduler.CurrentTick();
         for (const auto& [addr, size] : in_flight) {
-            StampGpuWrite(addr, size, tick);
+            StampGpuWrite(addr, size);
             memory_tracker->MarkRegionAsGpuModified(addr, size);
         }
         in_flight_moved = false;
@@ -777,9 +773,8 @@ void BufferCache::MoveInFlightWrites() {
         return;
     }
     // The submit took the batch the stamps name; the packet records into the one being opened.
-    const u64 tick = scheduler.CurrentTick();
     for (const auto& [addr, size] : in_flight) {
-        StampGpuWrite(addr, size, tick);
+        StampGpuWrite(addr, size);
     }
     in_flight_moved = true;
 }

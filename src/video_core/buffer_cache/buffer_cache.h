@@ -224,7 +224,7 @@ private:
     /// in place, a guest thread asks it to), then copies every retired write of the window into
     /// guest memory and consumes it. Returns false when the window has to take the GPU thread's
     /// copy.
-    bool DirectReadback(VAddr window, VAddr page, bool on_gpu_thread);
+    bool DirectReadback(VAddr device_addr);
 
     /// A read fault taken on the GPU thread, served by DirectReadback. Returns false when the
     /// synchronous download has to serve it.
@@ -257,7 +257,8 @@ private:
     /// Requires window_mutex.
     bool WindowsOwned(VAddr device_addr, u64 size) const;
 
-    void StampGpuWrite(VAddr device_addr, u64 size, u64 tick);
+    /// Stamps a GPU write with the tick of the open batch.
+    void StampGpuWrite(VAddr device_addr, u64 size);
 
     bool SynchronizeMemory(const Buffer* arena, VAddr device_addr, u32 size, bool is_written,
                            bool is_texel_buffer);
