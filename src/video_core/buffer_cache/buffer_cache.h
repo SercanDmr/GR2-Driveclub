@@ -172,6 +172,8 @@ public:
         u64 restamps;
         u64 direct;
         u64 direct_bytes;
+        /// Direct readbacks that found their window consumed by an earlier owner.
+        u64 clean;
         u64 flush_requests;
         u64 segments;
     };
@@ -358,6 +360,7 @@ private:
     std::atomic<u64> offload_restamps{};
     std::atomic<u64> offload_direct{};
     std::atomic<u64> offload_direct_bytes{};
+    std::atomic<u64> offload_clean{};
     std::atomic<u64> offload_flush_requests{};
 };
 

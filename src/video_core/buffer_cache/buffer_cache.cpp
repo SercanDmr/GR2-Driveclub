@@ -617,32 +617,38 @@ bool BufferCache::DirectReadback(VAddr window, VAddr page, bool on_gpu_thread) {
     // Owned only now, so the GPU thread never waits for a thread that waits for it.
     AcquireWindows(window, READBACK_WINDOW_SIZE);
     const u64 known = scheduler.GetWorkSemaphore()->KnownGpuTick();
-    // The island list lives on the signal stack; a window with more retired islands than it
-    // holds takes the GPU thread's copy. After the GPU thread's own flush the stamps above the
-    // known tick belong to the packet still being bound, whose bytes the arena holds as the GPU
-    // left them: they are copied and consumed like the synchronous download does.
-    static constexpr size_t MaxIslands = 32;
-    boost::container::small_vector<Range, MaxIslands> islands;
+    // The islands are collected and copied in batches, the list living on the signal stack. After
+    // the GPU thread's own flush the stamps above the known tick belong to the packet still being
+    // bound, whose bytes the arena holds as the GPU left them: they are copied and consumed like
+    // the synchronous download does.
+    static constexpr size_t BatchIslands = 32;
+    boost::container::small_vector<Range, BatchIslands> islands;
+    const VAddr window_end = window + READBACK_WINDOW_SIZE;
     u64 total_size = 0;
     bool copied = true;
-    {
-        std::scoped_lock lk{gpu_writes_mutex};
-        gpu_writes.ForEachInRange(window, READBACK_WINDOW_SIZE,
-                                  [&](VAddr begin, VAddr end, u64 tick) {
-                                      if (tick > known && !flushed) {
-                                          return;
-                                      }
-                                      if (islands.size() == MaxIslands) {
-                                          copied = false;
-                                          return;
-                                      }
-                                      islands.push_back({begin, end - begin});
-                                      total_size += end - begin;
-                                  });
-    }
-    copied = copied && total_size <= direct_read_limit;
-    for (auto it = islands.begin(); copied && it != islands.end(); ++it) {
-        copied = DirectRead(it->addr, it->size);
+    for (VAddr cursor = window; copied && cursor < window_end;) {
+        islands.clear();
+        VAddr next = window_end;
+        {
+            std::scoped_lock lk{gpu_writes_mutex};
+            gpu_writes.ForEachInRange(cursor, window_end - cursor,
+                                      [&](VAddr begin, VAddr end, u64 tick) {
+                                          if (islands.size() == BatchIslands) {
+                                              next = std::min(next, begin);
+                                              return;
+                                          }
+                                          if (tick > known && !flushed) {
+                                              return;
+                                          }
+                                          islands.push_back({begin, end - begin});
+                                          total_size += end - begin;
+                                      });
+        }
+        copied = total_size <= direct_read_limit;
+        for (auto it = islands.begin(); copied && it != islands.end(); ++it) {
+            copied = DirectRead(it->addr, it->size);
+        }
+        cursor = next;
     }
     if (!copied) {
         ReleaseWindows(window, READBACK_WINDOW_SIZE);
@@ -651,6 +657,8 @@ bool BufferCache::DirectReadback(VAddr window, VAddr page, bool on_gpu_thread) {
     if (total_size != 0) {
         offload_direct.fetch_add(1, std::memory_order_relaxed);
         offload_direct_bytes.fetch_add(total_size, std::memory_order_relaxed);
+    } else {
+        offload_clean.fetch_add(1, std::memory_order_relaxed);
     }
     // After the GPU thread's own flush and wait every recorded write has executed, and the writes
     // of a packet still being bound were moved into the new batch, which marks them again at its
@@ -705,6 +713,7 @@ BufferCache::OffloadStats BufferCache::DrainOffloadStats() {
         .restamps = take(offload_restamps),
         .direct = take(offload_direct),
         .direct_bytes = take(offload_direct_bytes),
+        .clean = take(offload_clean),
         .flush_requests = take(offload_flush_requests),
     };
     std::scoped_lock lk{gpu_writes_mutex};

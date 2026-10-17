@@ -1106,10 +1106,11 @@ void Rasterizer::EmitSkipcacheTelemetry(Skipcache::Framework& skipcache) {
     ws = {};
     if (const auto os = buffer_cache.DrainOffloadStats(); os.faults || os.copies || os.restamps) {
         LOG_INFO(Render_Skipcache,
-                 "[SkipCache] OFFLOAD faults={} direct={}/{}KiB flushreq={} copies={} busy={} "
-                 "empty={} stale={} orphans={} waited={}/{}ms restamps={} segments={} per300f",
-                 os.faults, os.direct, os.direct_bytes / 1024, os.flush_requests, os.copies,
-                 os.busy, os.empty, os.stale, os.orphans, os.waits, os.wait_ns / 1000000,
+                 "[SkipCache] OFFLOAD faults={} direct={}/{}KiB clean={} flushreq={} copies={} "
+                 "busy={} empty={} stale={} orphans={} waited={}/{}ms restamps={} segments={} "
+                 "per300f",
+                 os.faults, os.direct, os.direct_bytes / 1024, os.clean, os.flush_requests,
+                 os.copies, os.busy, os.empty, os.stale, os.orphans, os.waits, os.wait_ns / 1000000,
                  os.restamps, os.segments);
     }
     if (const auto vs = buffer_cache.DrainVerifyStats(); vs.windows != 0) {
