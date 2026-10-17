@@ -64,6 +64,7 @@ private:
     Vulkan::Scheduler& scheduler;
     BufferCache& buffer_cache;
     vk::Semaphore bind_semaphore;
+    u64 window_size;
     std::mutex mutex;
     std::condition_variable_any job_cv;
     std::condition_variable done_cv;

@@ -230,28 +230,22 @@ void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool as
     }
 }
 
-u64 BufferCache::CollectDownloads(const Buffer* arena, VAddr device_addr, u64 size,
-                                  DownloadCopies& copies) {
-    u64 total_size_bytes = 0;
-    const VAddr arena_base = arena->cpu_addr;
-    memory_tracker->ForEachDownloadRange<false>(device_addr, size, [&](u64 address, u64 size) {
-        const auto add_download = [&](VAddr start, VAddr end, u64) {
-            const u64 new_offset = start - arena_base;
-            const u64 new_size = end - start;
-            copies.push_back(vk::BufferCopy{
-                .srcOffset = new_offset,
-                .dstOffset = total_size_bytes,
-                .size = new_size,
-            });
-            // Align up to avoid cache conflicts
-            constexpr u64 align = 64ULL;
-            constexpr u64 mask = ~(align - 1ULL);
-            total_size_bytes += (new_size + align - 1) & mask;
-        };
-        std::scoped_lock lk{gpu_writes_mutex};
-        gpu_writes.ForEachInRange(address, size, add_download);
+u64 BufferCache::CollectWrites(const Buffer* arena, VAddr device_addr, u64 size, u64 tick,
+                               ReadbackCopies& copies) {
+    u64 total_size = copies.empty() ? 0 : copies.back().dstOffset + copies.back().size;
+    std::scoped_lock lk{gpu_writes_mutex};
+    gpu_writes.ForEachInRange(device_addr, size, [&](VAddr begin, VAddr end, u64 write_tick) {
+        if (write_tick > tick) {
+            return;
+        }
+        copies.push_back(vk::BufferCopy{
+            .srcOffset = arena->Offset(begin),
+            .dstOffset = total_size,
+            .size = end - begin,
+        });
+        total_size += end - begin;
     });
-    return total_size_bytes;
+    return total_size;
 }
 
 void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 size, bool async) {
@@ -261,9 +255,10 @@ void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 siz
     if (own_window) {
         AcquireWindows(device_addr, size);
     }
-    DownloadCopies copies;
+    ReadbackCopies copies;
     const VAddr arena_base = arena->cpu_addr;
-    const u64 total_size_bytes = CollectDownloads(arena, device_addr, size, copies);
+    const u64 total_size_bytes =
+        CollectWrites(arena, device_addr, size, scheduler.CurrentTick(), copies);
     if (total_size_bytes == 0) {
         // A page GPU modified without a GPU write to copy would fault forever.
         if (memory_tracker->IsRegionGpuModified(device_addr, size)) {
@@ -393,7 +388,7 @@ void BufferCache::WaitWindowsFree(VAddr device_addr, u64 size) {
 
 struct BufferCache::Readback {
     VAddr window{};
-    DownloadCopies copies{};
+    ReadbackCopies copies{};
     Vulkan::StagingBufferRef staging{};
     VAddr arena_base{};
     u64 tick{};
@@ -459,7 +454,7 @@ void BufferCache::RecordReadback(Readback& job) {
     const u64 block = job.window >> block_shift;
     const auto* arena = GetArena(block, block);
     const u64 total_size_bytes =
-        CollectDownloads(arena, job.window, READBACK_WINDOW_SIZE, job.copies);
+        CollectWrites(arena, job.window, READBACK_WINDOW_SIZE, scheduler.CurrentTick(), job.copies);
     if (total_size_bytes == 0) {
         ReleaseWindows(job.window, READBACK_WINDOW_SIZE);
         return;
@@ -501,25 +496,6 @@ const Buffer* BufferCache::ArenaOf(VAddr device_addr, u64& bind_tick) {
     }
     bind_tick = last_bind_tick;
     return arena;
-}
-
-u64 BufferCache::CollectRetiredWrites(const Buffer* arena, VAddr window, u64 tick,
-                                      std::vector<vk::BufferCopy>& copies) {
-    u64 total_size = 0;
-    std::scoped_lock lk{gpu_writes_mutex};
-    gpu_writes.ForEachInRange(window, READBACK_WINDOW_SIZE,
-                              [&](VAddr begin, VAddr end, u64 write_tick) {
-                                  if (write_tick > tick) {
-                                      return;
-                                  }
-                                  copies.push_back(vk::BufferCopy{
-                                      .srcOffset = arena->Offset(begin),
-                                      .dstOffset = total_size,
-                                      .size = end - begin,
-                                  });
-                                  total_size += end - begin;
-                              });
-    return total_size;
 }
 
 void BufferCache::WaitForTick(u64 tick) {
@@ -847,26 +823,14 @@ void BufferCache::ReadEdgeImagePages(const Image& image) {
     const VAddr image_end = image_addr + image_size;
     const VAddr page_start = PageManager::GetPageAddr(image_addr);
     const VAddr page_end = PageManager::GetNextPageAddr(image_end - 1);
-    boost::container::small_vector<vk::BufferCopy, 2> copies;
-    u64 total_size_bytes = 0;
     const auto [buffer, offset] = ObtainBuffer(page_start, page_end - page_start);
-    const auto add_download = [&](VAddr start, VAddr end, u64) {
-        const u64 new_offset = start - buffer->CpuAddr();
-        const u64 new_size = end - start;
-        copies.push_back(vk::BufferCopy{
-            .srcOffset = new_offset,
-            .dstOffset = total_size_bytes,
-            .size = new_size,
-        });
-        // Align up to avoid cache conflicts
-        constexpr u64 align = 64ULL;
-        constexpr u64 mask = ~(align - 1ULL);
-        total_size_bytes += (new_size + align - 1) & mask;
-    };
+    ReadbackCopies copies;
+    const u64 tick = scheduler.CurrentTick();
+    CollectWrites(buffer, page_start, image_addr - page_start, tick, copies);
+    const u64 total_size_bytes =
+        CollectWrites(buffer, image_end, page_end - image_end, tick, copies);
     {
         std::scoped_lock lk{gpu_writes_mutex};
-        gpu_writes.ForEachInRange(page_start, image_addr - page_start, add_download);
-        gpu_writes.ForEachInRange(image_end, page_end - image_end, add_download);
         gpu_writes.Subtract(page_start, page_end - page_start);
     }
     if (total_size_bytes == 0) {

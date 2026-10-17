@@ -116,10 +116,12 @@ public:
     void AcquireWindows(VAddr device_addr, u64 size);
     void ReleaseWindows(VAddr device_addr, u64 size);
 
-    /// Collects the writes of a readback window stamped up to tick as copies from the arena into a
-    /// staging buffer packed from offset 0, for the copy lanes. Returns the packed size.
-    u64 CollectRetiredWrites(const Buffer* arena, VAddr window, u64 tick,
-                             std::vector<vk::BufferCopy>& copies);
+    using ReadbackCopies = boost::container::small_vector<vk::BufferCopy, 2>;
+
+    /// Appends the GPU writes of a range stamped up to tick as copies from the arena into a staging
+    /// buffer, packed behind the copies already listed. Returns the packed size of the list.
+    u64 CollectWrites(const Buffer* arena, VAddr device_addr, u64 size, u64 tick,
+                      ReadbackCopies& copies);
 
     /// Finds a buffer for the specified region.
     [[nodiscard]] std::pair<const Buffer*, u64> ObtainBuffer(
@@ -215,11 +217,6 @@ private:
     void DownloadMemory(const Buffer* arena, VAddr device_addr, u64 size, bool async);
 
     struct Readback;
-    using DownloadCopies = boost::container::small_vector<vk::BufferCopy, 1>;
-
-    /// Moves the GPU written ranges of a span out of gpu_writes into copies from the arena,
-    /// packed from offset 0. Returns the packed size.
-    u64 CollectDownloads(const Buffer* arena, VAddr device_addr, u64 size, DownloadCopies& copies);
 
     /// Serves a fault from the thread that took it, inside one readback window, while the GPU
     /// thread keeps running. Returns false when the request has to take the synchronous download.

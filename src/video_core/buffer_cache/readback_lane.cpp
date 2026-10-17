@@ -43,15 +43,15 @@ struct ReadbackLanes::Lane {
     vk::UniqueCommandPool pool;
     vk::CommandBuffer cmdbuf;
     Buffer staging;
-    std::vector<vk::BufferCopy> copies;
+    BufferCache::ReadbackCopies copies;
     std::jthread thread;
 };
 
 ReadbackLanes::ReadbackLanes(const Vulkan::Instance& instance_, Vulkan::Scheduler& scheduler_,
                              BufferCache& buffer_cache_, vk::Semaphore bind_semaphore_,
-                             u64 window_size)
+                             u64 window_size_)
     : instance{instance_}, scheduler{scheduler_}, buffer_cache{buffer_cache_},
-      bind_semaphore{bind_semaphore_} {
+      bind_semaphore{bind_semaphore_}, window_size{window_size_} {
     const auto copy_queues = instance.GetCopyQueues();
     const bool shared = copy_queues.empty();
     const u32 count = shared ? 2 : static_cast<u32>(copy_queues.size());
@@ -113,8 +113,8 @@ void ReadbackLanes::Run(Lane& lane, std::stop_token stop) {
 void ReadbackLanes::Process(Lane& lane, Job& job) {
     const Request& request = job.request;
     lane.copies.clear();
-    const u64 total_size = buffer_cache.CollectRetiredWrites(request.arena, request.window,
-                                                             request.copy_tick, lane.copies);
+    const u64 total_size = buffer_cache.CollectWrites(request.arena, request.window, window_size,
+                                                      request.copy_tick, lane.copies);
     job.copied = total_size;
     if (total_size == 0) {
         return;
