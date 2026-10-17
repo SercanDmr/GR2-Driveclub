@@ -95,8 +95,7 @@ static std::optional<u32> FindHostVisibleArenaType(const Vulkan::Instance& insta
             largest_local_heap = std::max<u64>(largest_local_heap, props.memoryHeaps[i].size);
         }
     }
-    const u64 heap_size = props.memoryHeaps[props.memoryTypes[*type].heapIndex].size;
-    if (heap_size >= 1_GB && heap_size == largest_local_heap) {
+    if (props.memoryHeaps[props.memoryTypes[*type].heapIndex].size == largest_local_heap) {
         return type;
     }
     return std::nullopt;
