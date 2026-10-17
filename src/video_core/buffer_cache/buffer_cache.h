@@ -183,6 +183,8 @@ public:
         u64 clean;
         u64 lane_copies;
         u64 lane_bytes;
+        /// Time the faulting threads spent waiting for lane copies.
+        u64 lane_wait_ns;
         u64 flush_requests;
         u64 segments;
     };
@@ -363,6 +365,7 @@ private:
     std::atomic<u64> offload_clean{};
     std::atomic<u64> offload_lane_copies{};
     std::atomic<u64> offload_lane_bytes{};
+    std::atomic<u64> offload_lane_wait_ns{};
     std::atomic<u64> offload_flush_requests{};
     /// Last member: the lane threads stop before anything they use goes away.
     std::unique_ptr<ReadbackLanes> copy_lanes;

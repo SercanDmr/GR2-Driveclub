@@ -639,10 +639,15 @@ bool BufferCache::DirectReadback(VAddr window, VAddr page, bool on_gpu_thread) {
         // data.
         u64 bind_tick = 0;
         if (const Buffer* arena = ArenaOf(window, bind_tick)) {
+            const auto start = std::chrono::steady_clock::now();
             const auto lane_bytes = copy_lanes->Copy({arena, window, known, copy_tick, bind_tick});
+            const auto waited = std::chrono::steady_clock::now() - start;
             if (lane_bytes && *lane_bytes != 0) {
                 offload_lane_copies.fetch_add(1, std::memory_order_relaxed);
                 offload_lane_bytes.fetch_add(*lane_bytes, std::memory_order_relaxed);
+                offload_lane_wait_ns.fetch_add(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(waited).count(),
+                    std::memory_order_relaxed);
             } else if (lane_bytes) {
                 offload_clean.fetch_add(1, std::memory_order_relaxed);
             }
@@ -706,6 +711,7 @@ BufferCache::OffloadStats BufferCache::DrainOffloadStats() {
         .clean = take(offload_clean),
         .lane_copies = take(offload_lane_copies),
         .lane_bytes = take(offload_lane_bytes),
+        .lane_wait_ns = take(offload_lane_wait_ns),
         .flush_requests = take(offload_flush_requests),
     };
     std::scoped_lock lk{gpu_writes_mutex};
