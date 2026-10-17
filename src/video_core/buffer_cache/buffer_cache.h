@@ -345,7 +345,6 @@ private:
     FastPathStats fast_stats{};
 
     bool readback_offload{};
-    bool direct_read{};
     u64 direct_read_limit{};
     std::mutex window_mutex;
     std::condition_variable window_cv;

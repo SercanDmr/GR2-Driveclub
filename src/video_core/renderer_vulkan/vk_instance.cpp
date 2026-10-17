@@ -378,20 +378,19 @@ bool Instance::CreateDevice() {
         return false;
     }
 
-    // The readback copy lanes take a transfer-only family, so their copies never queue behind
-    // the graphics work they read back.
+    // The readback copy lanes take up to two queues of a transfer-only family, so their copies
+    // never queue behind the graphics work they read back.
     u32 copy_queue_count = 0;
-    const u32 copy_lanes =
-        EmulatorSettings.IsReadbackOffload() ? EmulatorSettings.GetReadbackCopyLanes() : 0;
     constexpr auto other_engines = vk::QueueFlagBits::eGraphics | vk::QueueFlagBits::eCompute |
                                    vk::QueueFlagBits::eVideoDecodeKHR |
                                    vk::QueueFlagBits::eVideoEncodeKHR |
                                    vk::QueueFlagBits::eOpticalFlowNV;
-    for (std::size_t i = 0; copy_lanes != 0 && i < family_properties.size(); i++) {
+    for (std::size_t i = 0; EmulatorSettings.IsReadbackOffload() && i < family_properties.size();
+         i++) {
         const auto flags = family_properties[i].queueFlags;
         if ((flags & vk::QueueFlagBits::eTransfer) && !(flags & other_engines)) {
             copy_queue_family_index = static_cast<u32>(i);
-            copy_queue_count = std::min({copy_lanes, family_properties[i].queueCount, 4u});
+            copy_queue_count = std::min(2u, family_properties[i].queueCount);
             break;
         }
     }

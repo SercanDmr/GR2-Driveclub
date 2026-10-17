@@ -49,13 +49,12 @@ struct ReadbackLanes::Lane {
 
 ReadbackLanes::ReadbackLanes(const Vulkan::Instance& instance_, Vulkan::Scheduler& scheduler_,
                              BufferCache& buffer_cache_, vk::Semaphore bind_semaphore_,
-                             u32 num_lanes, u64 window_size)
+                             u64 window_size)
     : instance{instance_}, scheduler{scheduler_}, buffer_cache{buffer_cache_},
       bind_semaphore{bind_semaphore_} {
     const auto copy_queues = instance.GetCopyQueues();
     const bool shared = copy_queues.empty();
-    const u32 count =
-        shared ? num_lanes : std::min(num_lanes, static_cast<u32>(copy_queues.size()));
+    const u32 count = shared ? 2 : static_cast<u32>(copy_queues.size());
     for (u32 i = 0; i < count; ++i) {
         const vk::Queue queue = shared ? instance.GetGraphicsQueue() : copy_queues[i];
         const u32 family =

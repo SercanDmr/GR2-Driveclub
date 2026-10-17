@@ -141,22 +141,18 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
             arena_memory_type_index = *host_type;
             arena_host_visible = true;
         }
-        direct_read = arena_host_visible && EmulatorSettings.IsReadbackDirectRead();
         // Lanes serve the windows a direct read cannot; an integrated GPU with host visible
         // arenas has none.
-        const u32 num_lanes = std::min<u32>(EmulatorSettings.GetReadbackCopyLanes(), 4);
-        if (num_lanes != 0 && !(arena_host_visible && instance.IsIntegrated())) {
-            copy_lanes = std::make_unique<ReadbackLanes>(instance, scheduler, *this,
-                                                         memory_semaphore.Handle(), num_lanes,
-                                                         READBACK_WINDOW_SIZE);
+        if (!(arena_host_visible && instance.IsIntegrated())) {
+            copy_lanes = std::make_unique<ReadbackLanes>(
+                instance, scheduler, *this, memory_semaphore.Handle(), READBACK_WINDOW_SIZE);
         }
-        const u64 limit_kb = EmulatorSettings.GetReadbackDirectMaxKb();
-        direct_read_limit = limit_kb != 0             ? limit_kb * 1_KB
-                            : instance.IsIntegrated() ? READBACK_WINDOW_SIZE
-                                                      : 256_KB;
+        // A discrete GPU takes a direct read of up to 256 KiB per window and a lane copy above
+        // that; an integrated GPU reads the whole window.
+        direct_read_limit = instance.IsIntegrated() ? READBACK_WINDOW_SIZE : 256_KB;
     }
-    LOG_INFO(Render_Vulkan, "Readback arena memory type {}, host visible: {}, direct read: {}",
-             arena_memory_type_index, arena_host_visible, direct_read);
+    LOG_INFO(Render_Vulkan, "Readback arena memory type {}, host visible: {}",
+             arena_memory_type_index, arena_host_visible);
 
     const u64 bda_pagetable_size =
         (blocks_per_arena_page * NUM_ARENA_PAGES) * sizeof(vk::DeviceAddress);
@@ -207,7 +203,7 @@ void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool as
     if (readback_offload && !assume_locks && FaultReadback(device_addr, size, is_write)) {
         return;
     }
-    if ((direct_read || copy_lanes) && assume_locks && !async &&
+    if ((arena_host_visible || copy_lanes) && assume_locks && !async &&
         GpuThreadReadback(device_addr, size, is_write)) {
         return;
     }
@@ -428,7 +424,7 @@ bool BufferCache::FaultReadback(VAddr device_addr, u64 size, bool is_write) {
     // which copies and unmarks in one GPU thread command.
     u32 attempts = 0;
     while (attempts < 2) {
-        if ((direct_read || copy_lanes) &&
+        if ((arena_host_visible || copy_lanes) &&
             DirectReadback(window, Common::AlignDown(device_addr, BYTES_PER_PAGE), false)) {
             ++attempts;
         } else {
@@ -590,7 +586,7 @@ bool BufferCache::DirectReadback(VAddr window, VAddr page, bool on_gpu_thread) {
     const VAddr window_end = window + READBACK_WINDOW_SIZE;
     u64 total_size = 0;
     bool copied = false;
-    if (direct_read) {
+    if (arena_host_visible) {
         // The islands are collected and copied in batches, the list living on the signal stack.
         static constexpr size_t BatchIslands = 32;
         boost::container::small_vector<Range, BatchIslands> islands;

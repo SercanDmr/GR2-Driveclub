@@ -31,8 +31,9 @@ struct Buffer;
 /// one, otherwise on the graphics queue under the scheduler's submit lock.
 class ReadbackLanes {
 public:
+    /// One lane per copy queue, or two on the graphics queue.
     explicit ReadbackLanes(const Vulkan::Instance& instance, Vulkan::Scheduler& scheduler,
-                           BufferCache& buffer_cache, vk::Semaphore bind_semaphore, u32 num_lanes,
+                           BufferCache& buffer_cache, vk::Semaphore bind_semaphore,
                            u64 window_size);
     ~ReadbackLanes();
 
