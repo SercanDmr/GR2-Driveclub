@@ -909,7 +909,6 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
         }
         DebugState.IncDrawCall();
     }
-    buffer_cache.CommitGpuWrites();
 
     ResetBindings(false);
 }
@@ -1001,7 +1000,6 @@ void Rasterizer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
     cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline->Handle());
     cmdbuf.dispatchIndirect(buffer->Handle(), base);
     DebugState.IncDispatch();
-    buffer_cache.CommitGpuWrites();
 
     ResetBindings(true);
 }
