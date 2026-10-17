@@ -708,13 +708,10 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
     buffer_cache.CommitGpuWrites();
 
     ResetBindings(false);
-    if (flush_request_tick_ != 0) {
-        copy_scope.reset();
-        FlushRequested();
-    }
+    // The flushes submit; they must not run under the guest-copy shared lock.
+    copy_scope.reset();
+    FlushRequested();
     if (flush_draw_interval_ != 0) {
-        // The flush submits; it must not run under the guest-copy shared lock.
-        copy_scope.reset();
         MaybeIntervalFlush();
     }
 }
@@ -727,10 +724,7 @@ void Rasterizer::RequestFlush(u64 tick) {
 }
 
 void Rasterizer::FlushRequested(bool force) {
-    if (flush_request_tick_ == 0) {
-        return;
-    }
-    // A flush since the request submitted the batch the waiter needs.
+    // No request pending, or a flush since the request submitted the batch the waiter needs.
     if (flush_request_tick_ < scheduler.CurrentTick()) {
         flush_request_tick_ = 0;
         return;
@@ -964,12 +958,10 @@ void Rasterizer::DispatchDirect() {
     buffer_cache.CommitGpuWrites();
 
     ResetBindings(true);
-    if (flush_request_tick_ != 0) {
-        copy_scope.reset();
-        FlushRequested();
-    }
+    // The flushes submit; they must not run under the guest-copy shared lock.
+    copy_scope.reset();
+    FlushRequested();
     if (flush_draw_interval_ != 0) {
-        copy_scope.reset();
         MaybeIntervalFlush();
     }
 }
