@@ -320,10 +320,9 @@ void BufferCache::ConsumeGpuWrites(VAddr device_addr, u64 size, u64 known_tick) 
             std::array<u64, NUM_REGION_WORDS> kept{};
             const auto mark_pages = [&](std::array<u64, NUM_REGION_WORDS>& pages, VAddr begin,
                                         VAddr end) {
-                const u64 last_page = (end - 1 - region_base) / BYTES_PER_PAGE;
-                for (u64 page = (begin - region_base) / BYTES_PER_PAGE; page <= last_page; ++page) {
-                    pages[page / PAGES_PER_WORD] |= u64{1} << (page % PAGES_PER_WORD);
-                }
+                RegionManager::IterateWords(
+                    RegionManager::GetBounds(begin - region_base, end - begin),
+                    [&](u64 index, u64 mask) { pages[index] |= mask; });
             };
             boost::container::small_vector<Range, 32> erased;
             // The map lock stays held through the clear: a write marked meanwhile either shows
