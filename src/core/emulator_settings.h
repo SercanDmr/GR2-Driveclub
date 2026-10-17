@@ -504,6 +504,11 @@ struct GPUSettings {
     // Temporary check of the direct read: faults take the GPU thread's copy and compare it with
     // the arena's host mapping, counted in the VERIFY telemetry line.
     Setting<bool> readback_verify{false};
+    // Readback copy lanes: threads with a queue of their own that copy a window's retired GPU
+    // writes into guest memory when the arena has no host mapping or the window is too large for
+    // a direct read. A transfer-only queue family carries them, otherwise the graphics queue does.
+    // 0 = off, the GPU thread copies.
+    Setting<u32> readback_copy_lanes{2};
     // Flush the open graphics batch early when it already holds this many draws and every batch
     // submitted so far has retired (the ring runs dry while the rest of the batch is recorded).
     // Rounded up to a multiple of 32, and ignored unless flush_draw_interval is set larger than
@@ -770,6 +775,7 @@ struct GPUSettings {
             GPU_OVERRIDE(readback_direct_read),
             GPU_OVERRIDE(readback_direct_max_kb),
             GPU_OVERRIDE(readback_verify),
+            GPU_OVERRIDE(readback_copy_lanes),
             GPU_OVERRIDE(ring_drain_flush_draws),
             GPU_OVERRIDE(pending_pop_throttle),
             GPU_OVERRIDE(stream_copy_workers),
@@ -862,7 +868,7 @@ struct GPUSettings {
     vertex_layout_memo, covered_range_skip, residency_bitmap, \
     readback_linear_images_async, inline_fetch_shader, stream_barrier_skip, \
     clean_sync_peek, readback_offload, arena_memory_type, readback_direct_read, \
-    readback_direct_max_kb, readback_verify
+    readback_direct_max_kb, readback_verify, readback_copy_lanes
 // clang-format on
 template <
     typename BasicJsonType,
@@ -1208,6 +1214,7 @@ public:
     SETTING_FORWARD_BOOL(m_gpu, ReadbackDirectRead, readback_direct_read)
     SETTING_FORWARD(m_gpu, ReadbackDirectMaxKb, readback_direct_max_kb)
     SETTING_FORWARD_BOOL(m_gpu, ReadbackVerify, readback_verify)
+    SETTING_FORWARD(m_gpu, ReadbackCopyLanes, readback_copy_lanes)
     SETTING_FORWARD(m_gpu, RingDrainFlushDraws, ring_drain_flush_draws)
     SETTING_FORWARD(m_gpu, PendingPopThrottle, pending_pop_throttle)
     SETTING_FORWARD(m_gpu, StreamCopyWorkers, stream_copy_workers)

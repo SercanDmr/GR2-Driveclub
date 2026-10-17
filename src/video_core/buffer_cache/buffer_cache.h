@@ -7,6 +7,7 @@
 #include <condition_variable>
 #include <deque>
 #include <mutex>
+#include <vector>
 #include <boost/container/small_vector.hpp>
 
 #include "common/enum.h"
@@ -39,6 +40,7 @@ namespace VideoCore {
 class TextureCache;
 class MemoryTracker;
 class PageManager;
+class ReadbackLanes;
 
 enum class ObtainBufferFlags {
     None = 0,
@@ -114,6 +116,11 @@ public:
     void AcquireWindows(VAddr device_addr, u64 size);
     void ReleaseWindows(VAddr device_addr, u64 size);
 
+    /// Collects the writes of a readback window stamped up to tick as copies from the arena into a
+    /// staging buffer packed from offset 0, for the copy lanes. Returns the packed size.
+    u64 CollectRetiredWrites(const Buffer* arena, VAddr window, u64 tick,
+                             std::vector<vk::BufferCopy>& copies);
+
     /// Finds a buffer for the specified region.
     [[nodiscard]] std::pair<const Buffer*, u64> ObtainBuffer(
         VAddr device_addr, u32 size, ObtainBufferFlags flags = ObtainBufferFlags::None);
@@ -174,6 +181,7 @@ public:
         u64 direct_bytes;
         /// Direct readbacks that found their window consumed by an earlier owner.
         u64 clean;
+        u64 lane_copies;
         u64 flush_requests;
         u64 segments;
     };
@@ -238,6 +246,9 @@ private:
 
     /// Waits for a submitted tick, counting the waits that block.
     void WaitForTick(u64 tick);
+
+    /// The arena holding an address, for the faulting threads.
+    const Buffer* ArenaOf(VAddr device_addr);
 
     /// readback_verify: compares a GPU copied range with the arena's host mapping and returns the
     /// count of differing bytes.
@@ -361,7 +372,10 @@ private:
     std::atomic<u64> offload_direct{};
     std::atomic<u64> offload_direct_bytes{};
     std::atomic<u64> offload_clean{};
+    std::atomic<u64> offload_lane_copies{};
     std::atomic<u64> offload_flush_requests{};
+    /// Last member: the lane threads stop before anything they use goes away.
+    std::unique_ptr<ReadbackLanes> copy_lanes;
 };
 
 } // namespace VideoCore

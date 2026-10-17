@@ -378,11 +378,33 @@ bool Instance::CreateDevice() {
         return false;
     }
 
-    static constexpr std::array queue_priorities = {1.0f};
-    const vk::DeviceQueueCreateInfo queue_info = {
-        .queueFamilyIndex = queue_family_index,
-        .queueCount = static_cast<u32>(queue_priorities.size()),
-        .pQueuePriorities = queue_priorities.data(),
+    // The readback copy lanes take a transfer-only family, so their copies never queue behind
+    // the graphics work they read back.
+    u32 copy_queue_count = 0;
+    const u32 copy_lanes =
+        EmulatorSettings.IsReadbackOffload() ? EmulatorSettings.GetReadbackCopyLanes() : 0;
+    for (std::size_t i = 0; copy_lanes != 0 && i < family_properties.size(); i++) {
+        const auto flags = family_properties[i].queueFlags;
+        if ((flags & vk::QueueFlagBits::eTransfer) &&
+            !(flags & (vk::QueueFlagBits::eGraphics | vk::QueueFlagBits::eCompute))) {
+            copy_queue_family_index = static_cast<u32>(i);
+            copy_queue_count = std::min({copy_lanes, family_properties[i].queueCount, 4u});
+            break;
+        }
+    }
+
+    static constexpr std::array queue_priorities = {1.0f, 1.0f, 1.0f, 1.0f};
+    const std::array queue_infos = {
+        vk::DeviceQueueCreateInfo{
+            .queueFamilyIndex = queue_family_index,
+            .queueCount = 1u,
+            .pQueuePriorities = queue_priorities.data(),
+        },
+        vk::DeviceQueueCreateInfo{
+            .queueFamilyIndex = copy_queue_family_index,
+            .queueCount = copy_queue_count,
+            .pQueuePriorities = queue_priorities.data(),
+        },
     };
 
     const auto vk11_features = feature_chain.get<vk::PhysicalDeviceVulkan11Features>();
@@ -390,8 +412,8 @@ bool Instance::CreateDevice() {
     vk13_features = feature_chain.get<vk::PhysicalDeviceVulkan13Features>();
     vk::StructureChain device_chain = {
         vk::DeviceCreateInfo{
-            .queueCreateInfoCount = 1u,
-            .pQueueCreateInfos = &queue_info,
+            .queueCreateInfoCount = copy_queue_count != 0 ? 2u : 1u,
+            .pQueueCreateInfos = queue_infos.data(),
             .enabledExtensionCount = static_cast<u32>(enabled_extensions.size()),
             .ppEnabledExtensionNames = enabled_extensions.data(),
         },
@@ -597,6 +619,9 @@ bool Instance::CreateDevice() {
 
     graphics_queue = device->getQueue(queue_family_index, 0);
     present_queue = device->getQueue(queue_family_index, 0);
+    for (u32 i = 0; i < copy_queue_count; ++i) {
+        copy_queues.push_back(device->getQueue(copy_queue_family_index, i));
+    }
 
     if (calibrated_timestamps) {
         const auto [time_domains_result, time_domains] =

@@ -17,6 +17,7 @@
 #include "video_core/buffer_cache/buffer.h"
 #include "video_core/buffer_cache/buffer_cache.h"
 #include "video_core/buffer_cache/memory_tracker.h"
+#include "video_core/buffer_cache/readback_lane.h"
 #include "video_core/buffer_cache/region_definitions.h"
 #include "video_core/buffer_cache/stream_copy_lane.h"
 #include "video_core/renderer_vulkan/vk_graphics_pipeline.h"
@@ -153,6 +154,13 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
         if (verify_direct) {
             direct_read = false;
         }
+        // Lanes serve the windows a direct read cannot; an integrated GPU with host visible
+        // arenas has none, and the verify check wants the GPU thread's copy.
+        const u32 num_lanes = std::min<u32>(EmulatorSettings.GetReadbackCopyLanes(), 4);
+        if (num_lanes != 0 && !verify_direct && !(arena_host_visible && instance.IsIntegrated())) {
+            copy_lanes = std::make_unique<ReadbackLanes>(instance, scheduler, *this, num_lanes,
+                                                         READBACK_WINDOW_SIZE);
+        }
         const u64 limit_kb = EmulatorSettings.GetReadbackDirectMaxKb();
         direct_read_limit = limit_kb != 0             ? limit_kb * 1_KB
                             : instance.IsIntegrated() ? READBACK_WINDOW_SIZE
@@ -210,7 +218,8 @@ void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool as
     if (readback_offload && !assume_locks && FaultReadback(device_addr, size, is_write)) {
         return;
     }
-    if (direct_read && assume_locks && !async && GpuThreadReadback(device_addr, size, is_write)) {
+    if ((direct_read || copy_lanes) && assume_locks && !async &&
+        GpuThreadReadback(device_addr, size, is_write)) {
         return;
     }
     const auto flush_request = [this, device_addr, size, is_write, async] {
@@ -430,7 +439,7 @@ bool BufferCache::FaultReadback(VAddr device_addr, u64 size, bool is_write) {
     // which copies and unmarks in one GPU thread command.
     u32 attempts = 0;
     while (attempts < 2) {
-        if (direct_read &&
+        if ((direct_read || copy_lanes) &&
             DirectReadback(window, Common::AlignDown(device_addr, BYTES_PER_PAGE), false)) {
             ++attempts;
         } else {
@@ -567,6 +576,30 @@ BufferCache::VerifyStats BufferCache::DrainVerifyStats() {
     };
 }
 
+const Buffer* BufferCache::ArenaOf(VAddr device_addr) {
+    std::scoped_lock lk{arena_mutex};
+    return address_space[device_addr >> ARENA_PAGE_BITS];
+}
+
+u64 BufferCache::CollectRetiredWrites(const Buffer* arena, VAddr window, u64 tick,
+                                      std::vector<vk::BufferCopy>& copies) {
+    u64 total_size = 0;
+    std::scoped_lock lk{gpu_writes_mutex};
+    gpu_writes.ForEachInRange(window, READBACK_WINDOW_SIZE,
+                              [&](VAddr begin, VAddr end, u64 write_tick) {
+                                  if (write_tick > tick) {
+                                      return;
+                                  }
+                                  copies.push_back(vk::BufferCopy{
+                                      .srcOffset = arena->Offset(begin),
+                                      .dstOffset = total_size,
+                                      .size = end - begin,
+                                  });
+                                  total_size += end - begin;
+                              });
+    return total_size;
+}
+
 void BufferCache::WaitForTick(u64 tick) {
     if (scheduler.GetWorkSemaphore()->IsFree(tick)) {
         return;
@@ -617,53 +650,63 @@ bool BufferCache::DirectReadback(VAddr window, VAddr page, bool on_gpu_thread) {
     // Owned only now, so the GPU thread never waits for a thread that waits for it.
     AcquireWindows(window, READBACK_WINDOW_SIZE);
     const u64 known = scheduler.GetWorkSemaphore()->KnownGpuTick();
-    // The islands are collected and copied in batches, the list living on the signal stack. After
-    // the GPU thread's own flush the stamps above the known tick belong to the packet still being
-    // bound, whose bytes the arena holds as the GPU left them: they are copied and consumed like
-    // the synchronous download does.
-    static constexpr size_t BatchIslands = 32;
-    boost::container::small_vector<Range, BatchIslands> islands;
+    // After the GPU thread's own flush and wait every recorded write has executed, and the writes
+    // of a packet still being bound were moved into the new batch, which marks them again at its
+    // commit; their bytes are the arena's as the GPU left them, so the copy and the consume take
+    // the current tick, like the synchronous download does.
+    const u64 copy_tick = flushed ? scheduler.CurrentTick() : known;
     const VAddr window_end = window + READBACK_WINDOW_SIZE;
     u64 total_size = 0;
-    bool copied = true;
-    for (VAddr cursor = window; copied && cursor < window_end;) {
-        islands.clear();
-        VAddr next = window_end;
-        {
-            std::scoped_lock lk{gpu_writes_mutex};
-            gpu_writes.ForEachInRange(cursor, window_end - cursor,
-                                      [&](VAddr begin, VAddr end, u64 tick) {
-                                          if (islands.size() == BatchIslands) {
-                                              next = std::min(next, begin);
-                                              return;
-                                          }
-                                          if (tick > known && !flushed) {
-                                              return;
-                                          }
-                                          islands.push_back({begin, end - begin});
-                                          total_size += end - begin;
-                                      });
+    bool copied = false;
+    if (direct_read) {
+        // The islands are collected and copied in batches, the list living on the signal stack.
+        static constexpr size_t BatchIslands = 32;
+        boost::container::small_vector<Range, BatchIslands> islands;
+        copied = true;
+        for (VAddr cursor = window; copied && cursor < window_end;) {
+            islands.clear();
+            VAddr next = window_end;
+            {
+                std::scoped_lock lk{gpu_writes_mutex};
+                gpu_writes.ForEachInRange(cursor, window_end - cursor,
+                                          [&](VAddr begin, VAddr end, u64 tick) {
+                                              if (islands.size() == BatchIslands) {
+                                                  next = std::min(next, begin);
+                                                  return;
+                                              }
+                                              if (tick > copy_tick) {
+                                                  return;
+                                              }
+                                              islands.push_back({begin, end - begin});
+                                              total_size += end - begin;
+                                          });
+            }
+            copied = total_size <= direct_read_limit;
+            for (auto it = islands.begin(); copied && it != islands.end(); ++it) {
+                copied = DirectRead(it->addr, it->size);
+            }
+            cursor = next;
         }
-        copied = total_size <= direct_read_limit;
-        for (auto it = islands.begin(); copied && it != islands.end(); ++it) {
-            copied = DirectRead(it->addr, it->size);
+    }
+    if (copied) {
+        if (total_size != 0) {
+            offload_direct.fetch_add(1, std::memory_order_relaxed);
+            offload_direct_bytes.fetch_add(total_size, std::memory_order_relaxed);
+        } else {
+            offload_clean.fetch_add(1, std::memory_order_relaxed);
         }
-        cursor = next;
+    } else if (copy_lanes) {
+        // The lane copies the whole window; what a direct read wrote before giving up is the same
+        // data.
+        copy_lanes->Copy(ArenaOf(window), window, known, copy_tick);
+        offload_lane_copies.fetch_add(1, std::memory_order_relaxed);
+        copied = true;
     }
     if (!copied) {
         ReleaseWindows(window, READBACK_WINDOW_SIZE);
         return false;
     }
-    if (total_size != 0) {
-        offload_direct.fetch_add(1, std::memory_order_relaxed);
-        offload_direct_bytes.fetch_add(total_size, std::memory_order_relaxed);
-    } else {
-        offload_clean.fetch_add(1, std::memory_order_relaxed);
-    }
-    // After the GPU thread's own flush and wait every recorded write has executed, and the writes
-    // of a packet still being bound were moved into the new batch, which marks them again at its
-    // commit: the consume takes the current tick.
-    ConsumeGpuWrites(window, READBACK_WINDOW_SIZE, flushed ? scheduler.CurrentTick() : known);
+    ConsumeGpuWrites(window, READBACK_WINDOW_SIZE, copy_tick);
     ReleaseWindows(window, READBACK_WINDOW_SIZE);
     return true;
 }
@@ -714,6 +757,7 @@ BufferCache::OffloadStats BufferCache::DrainOffloadStats() {
         .direct = take(offload_direct),
         .direct_bytes = take(offload_direct_bytes),
         .clean = take(offload_clean),
+        .lane_copies = take(offload_lane_copies),
         .flush_requests = take(offload_flush_requests),
     };
     std::scoped_lock lk{gpu_writes_mutex};
@@ -940,6 +984,7 @@ const Buffer* BufferCache::GetArena(u64 first_block, u64 last_block) {
             const auto* new_arena =
                 &arenas.emplace_back(instance, base_block << block_shift,
                                      num_pages << ARENA_PAGE_BITS, MemoryType::Sparse);
+            std::scoped_lock lk{arena_mutex};
             address_space[first_page] = new_arena;
             address_space[last_page] = new_arena;
         }
@@ -968,6 +1013,7 @@ const Buffer* BufferCache::GetArena(u64 first_block, u64 last_block) {
         });
     });
 
+    std::scoped_lock lk{arena_mutex};
     u64 base_page = first_addr >> ARENA_PAGE_BITS;
     for (u32 page = 0; page < (first_size >> ARENA_PAGE_BITS); ++page) {
         address_space[base_page + page] = new_arena;
