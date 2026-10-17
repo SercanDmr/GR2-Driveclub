@@ -172,23 +172,15 @@ public:
     struct OffloadStats {
         u64 faults;
         u64 copies;
-        u64 busy;
-        u64 empty;
-        u64 stale;
-        u64 orphans;
         u64 waits;
         u64 wait_ns;
-        u64 restamps;
         u64 direct;
         u64 direct_bytes;
-        /// Direct readbacks that found their window consumed by an earlier owner.
-        u64 clean;
         u64 lane_copies;
         u64 lane_bytes;
         /// Time the faulting threads spent waiting for lane copies.
         u64 lane_wait_ns;
         u64 flush_requests;
-        u64 segments;
     };
     OffloadStats DrainOffloadStats();
 
@@ -348,16 +340,10 @@ private:
     /// Bumped from the faulting threads and the GPU thread alike.
     std::atomic<u64> offload_faults{};
     std::atomic<u64> offload_copies{};
-    std::atomic<u64> offload_busy{};
-    std::atomic<u64> offload_empty{};
-    std::atomic<u64> offload_stale{};
-    std::atomic<u64> offload_orphans{};
     std::atomic<u64> offload_waits{};
     std::atomic<u64> offload_wait_ns{};
-    std::atomic<u64> offload_restamps{};
     std::atomic<u64> offload_direct{};
     std::atomic<u64> offload_direct_bytes{};
-    std::atomic<u64> offload_clean{};
     std::atomic<u64> offload_lane_copies{};
     std::atomic<u64> offload_lane_bytes{};
     std::atomic<u64> offload_lane_wait_ns{};

@@ -263,7 +263,6 @@ void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 siz
         if (memory_tracker->IsRegionGpuModified(device_addr, size)) {
             LOG_WARNING(Render_Vulkan, "GPU modified pages without a GPU write at {:#x}",
                         device_addr);
-            offload_orphans.fetch_add(1, std::memory_order_relaxed);
             memory_tracker->UnmarkRegionAsGpuModified(device_addr, size, false);
         }
         if (own_window) {
@@ -334,7 +333,6 @@ void BufferCache::ConsumeGpuWrites(VAddr device_addr, u64 size, u64 known_tick) 
                     erased.push_back({begin, end - begin});
                 } else {
                     mark_pages(kept, begin, end);
-                    offload_stale.fetch_add(1, std::memory_order_relaxed);
                 }
             });
             for (const auto& [addr, erased_size] : erased) {
@@ -419,13 +417,10 @@ bool BufferCache::FaultReadback(VAddr device_addr, u64 size, bool is_write) {
             Readback job{.window = window};
             liverpool->SendCommand<true>([this, &job] { RecordReadback(job); });
             if (job.busy) {
-                offload_busy.fetch_add(1, std::memory_order_relaxed);
                 WaitWindowsFree(window, READBACK_WINDOW_SIZE);
             } else {
                 ++attempts;
-                if (job.copies.empty()) {
-                    offload_empty.fetch_add(1, std::memory_order_relaxed);
-                } else {
+                if (!job.copies.empty()) {
                     WaitForTick(job.tick);
                     FinishReadback(job);
                 }
@@ -585,12 +580,8 @@ bool BufferCache::DirectReadback(VAddr window, VAddr page, bool on_gpu_thread) {
         }
     }
     if (copied) {
-        if (total_size != 0) {
-            offload_direct.fetch_add(1, std::memory_order_relaxed);
-            offload_direct_bytes.fetch_add(total_size, std::memory_order_relaxed);
-        } else {
-            offload_clean.fetch_add(1, std::memory_order_relaxed);
-        }
+        offload_direct.fetch_add(1, std::memory_order_relaxed);
+        offload_direct_bytes.fetch_add(total_size, std::memory_order_relaxed);
     } else if (copy_lanes) {
         // The lane copies the whole window; what a direct read wrote before giving up is the same
         // data.
@@ -599,14 +590,12 @@ bool BufferCache::DirectReadback(VAddr window, VAddr page, bool on_gpu_thread) {
             const auto start = std::chrono::steady_clock::now();
             const auto lane_bytes = copy_lanes->Copy({arena, window, known, copy_tick, bind_tick});
             const auto waited = std::chrono::steady_clock::now() - start;
-            if (lane_bytes && *lane_bytes != 0) {
+            if (lane_bytes) {
                 offload_lane_copies.fetch_add(1, std::memory_order_relaxed);
                 offload_lane_bytes.fetch_add(*lane_bytes, std::memory_order_relaxed);
                 offload_lane_wait_ns.fetch_add(
                     std::chrono::duration_cast<std::chrono::nanoseconds>(waited).count(),
                     std::memory_order_relaxed);
-            } else if (lane_bytes) {
-                offload_clean.fetch_add(1, std::memory_order_relaxed);
             }
             copied = lane_bytes.has_value();
         }
@@ -653,27 +642,18 @@ BufferCache::OffloadStats BufferCache::DrainOffloadStats() {
     const auto take = [](std::atomic<u64>& counter) {
         return counter.exchange(0, std::memory_order_relaxed);
     };
-    OffloadStats stats{
+    return OffloadStats{
         .faults = take(offload_faults),
         .copies = take(offload_copies),
-        .busy = take(offload_busy),
-        .empty = take(offload_empty),
-        .stale = take(offload_stale),
-        .orphans = take(offload_orphans),
         .waits = take(offload_waits),
         .wait_ns = take(offload_wait_ns),
-        .restamps = take(offload_restamps),
         .direct = take(offload_direct),
         .direct_bytes = take(offload_direct_bytes),
-        .clean = take(offload_clean),
         .lane_copies = take(offload_lane_copies),
         .lane_bytes = take(offload_lane_bytes),
         .lane_wait_ns = take(offload_lane_wait_ns),
         .flush_requests = take(offload_flush_requests),
     };
-    std::scoped_lock lk{gpu_writes_mutex};
-    stats.segments = gpu_writes.Size();
-    return stats;
 }
 
 std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 size,
@@ -804,7 +784,6 @@ void BufferCache::MoveInFlightWrites() {
         StampGpuWrite(addr, size, tick);
     }
     in_flight_moved = true;
-    offload_restamps.fetch_add(1, std::memory_order_relaxed);
 }
 
 void BufferCache::ReadEdgeImagePages(const Image& image) {
