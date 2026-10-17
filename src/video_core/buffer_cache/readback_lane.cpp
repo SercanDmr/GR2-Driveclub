@@ -5,7 +5,6 @@
 #include "common/logging/log.h"
 #include "common/polyfill_thread.h"
 #include "common/thread.h"
-#include "core/memory.h"
 #include "video_core/buffer_cache/buffer.h"
 #include "video_core/buffer_cache/buffer_cache.h"
 #include "video_core/buffer_cache/readback_lane.h"
@@ -171,11 +170,8 @@ void ReadbackLanes::Process(Lane& lane, Job& job) {
     lane.timeline.Wait(signal_tick);
 
     lane.staging.Invalidate(0, total_size);
-    auto* memory = Core::Memory::Instance();
-    for (const auto& copy : lane.copies) {
-        memory->TryWriteBacking(std::bit_cast<u8*>(request.arena->CpuAddr() + copy.srcOffset),
-                                lane.staging.mapped_data.data() + copy.dstOffset, copy.size);
-    }
+    buffer_cache.WriteBack(request.arena->CpuAddr(), lane.copies, lane.staging.mapped_data.data(),
+                           0);
 }
 
 } // namespace VideoCore

@@ -246,6 +246,14 @@ u64 BufferCache::CollectWrites(const Buffer* arena, VAddr device_addr, u64 size,
     return total_size;
 }
 
+void BufferCache::WriteBack(VAddr arena_base, const ReadbackCopies& copies, const u8* mapped,
+                            u64 staging_offset) const {
+    for (const auto& copy : copies) {
+        memory->TryWriteBacking(std::bit_cast<u8*>(arena_base + copy.srcOffset),
+                                mapped + (copy.dstOffset - staging_offset), copy.size);
+    }
+}
+
 void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 size, bool async) {
     // An asynchronous download's caller owns the range until the deferred write-back has run; a
     // synchronous one owns it here.
@@ -280,11 +288,7 @@ void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 siz
     const auto write_data = [this, arena_base, device_addr, size, download, async, own_window,
                              record_tick, copies = std::move(copies)] {
         download.Invalidate();
-        for (const auto& copy : copies) {
-            auto* dst_addr = std::bit_cast<u8*>(arena_base + copy.srcOffset);
-            memory->TryWriteBacking(dst_addr, download.mapped + (copy.dstOffset - download.offset),
-                                    copy.size);
-        }
+        WriteBack(arena_base, copies, download.mapped, download.offset);
         Skipcache::Framework::Instance().BumpMemGen();
         // After the synchronous wait every write the copy found has executed, including the
         // writes of a packet still being bound, which the commit after its record marks again.
@@ -468,11 +472,7 @@ void BufferCache::FinishReadback(const Readback& job) {
     job.staging.Invalidate();
     // The write-back runs ahead of the consume: the window is owned, so a write marked meanwhile
     // keeps its pages GPU modified and the guest never reads them.
-    for (const auto& copy : job.copies) {
-        auto* dst_addr = std::bit_cast<u8*>(job.arena_base + copy.srcOffset);
-        memory->TryWriteBacking(
-            dst_addr, job.staging.mapped + (copy.dstOffset - job.staging.offset), copy.size);
-    }
+    WriteBack(job.arena_base, job.copies, job.staging.mapped, job.staging.offset);
     ConsumeGpuWrites(job.window, READBACK_WINDOW_SIZE, job.tick);
     ReleaseWindows(job.window, READBACK_WINDOW_SIZE);
     // The staging pool belongs to the GPU thread.
@@ -818,13 +818,7 @@ void BufferCache::ReadEdgeImagePages(const Image& image) {
     scheduler.DeferOperation(
         [this, base = buffer->CpuAddr(), download, copies = std::move(copies)]() {
             download.Invalidate();
-            auto* memory = Core::Memory::Instance();
-            for (const auto& copy : copies) {
-                const VAddr copy_device_addr = base + copy.srcOffset;
-                const u64 dst_offset = copy.dstOffset - download.offset;
-                memory->TryWriteBacking(std::bit_cast<u8*>(copy_device_addr),
-                                        download.mapped + dst_offset, copy.size);
-            }
+            WriteBack(base, copies, download.mapped, download.offset);
             Skipcache::Framework::Instance().BumpMemGen();
             staging_pool.FreeDeferred(download);
         });

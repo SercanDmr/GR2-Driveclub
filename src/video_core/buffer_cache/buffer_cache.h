@@ -123,6 +123,11 @@ public:
     u64 CollectWrites(const Buffer* arena, VAddr device_addr, u64 size, u64 tick,
                       ReadbackCopies& copies);
 
+    /// Writes the copies of a staging buffer, whose host mapping starts at staging_offset, back to
+    /// guest memory.
+    void WriteBack(VAddr arena_base, const ReadbackCopies& copies, const u8* mapped,
+                   u64 staging_offset) const;
+
     /// Finds a buffer for the specified region.
     [[nodiscard]] std::pair<const Buffer*, u64> ObtainBuffer(
         VAddr device_addr, u32 size, ObtainBufferFlags flags = ObtainBufferFlags::None);
