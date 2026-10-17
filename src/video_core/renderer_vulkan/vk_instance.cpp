@@ -395,7 +395,7 @@ bool Instance::CreateDevice() {
         }
     }
 
-    static constexpr std::array queue_priorities = {1.0f, 1.0f, 1.0f, 1.0f};
+    static constexpr std::array queue_priorities = {1.0f, 1.0f};
     const std::array queue_infos = {
         vk::DeviceQueueCreateInfo{
             .queueFamilyIndex = queue_family_index,
