@@ -489,12 +489,6 @@ struct GPUSettings {
     // copies the window and the faulting thread waits for the copy; a GPU write marked in the
     // window meanwhile keeps its pages GPU modified.
     Setting<bool> readback_offload{false};
-    // Memory type of the sparse buffer arenas while readback_offload is on, which a faulting
-    // thread reads directly when the type is host visible: 0 picks host visible device memory
-    // when its heap is the device's video memory (integrated GPUs, resizable BAR), 1 keeps plain
-    // device memory, 2 takes host visible device memory whatever its heap, 3 takes host cached
-    // memory.
-    Setting<u32> arena_memory_type{0};
     // A faulting thread copies retired GPU writes straight out of a host visible arena; off makes
     // it take the GPU thread's copy instead.
     Setting<bool> readback_direct_read{true};
@@ -768,7 +762,6 @@ struct GPUSettings {
             GPU_OVERRIDE(stream_barrier_skip),
             GPU_OVERRIDE(clean_sync_peek),
             GPU_OVERRIDE(readback_offload),
-            GPU_OVERRIDE(arena_memory_type),
             GPU_OVERRIDE(readback_direct_read),
             GPU_OVERRIDE(readback_direct_max_kb),
             GPU_OVERRIDE(readback_copy_lanes),
@@ -863,7 +856,7 @@ struct GPUSettings {
     runtime_info_stamp_gate, userfaultfd, gpu_thread_core_reserve, one_thread_per_core, \
     vertex_layout_memo, covered_range_skip, residency_bitmap, \
     readback_linear_images_async, inline_fetch_shader, stream_barrier_skip, \
-    clean_sync_peek, readback_offload, arena_memory_type, readback_direct_read, \
+    clean_sync_peek, readback_offload, readback_direct_read, \
     readback_direct_max_kb, readback_copy_lanes
 // clang-format on
 template <
@@ -1206,7 +1199,6 @@ public:
     SETTING_FORWARD_BOOL(m_gpu, StreamBarrierSkip, stream_barrier_skip)
     SETTING_FORWARD_BOOL(m_gpu, CleanSyncPeek, clean_sync_peek)
     SETTING_FORWARD_BOOL(m_gpu, ReadbackOffload, readback_offload)
-    SETTING_FORWARD(m_gpu, ArenaMemoryType, arena_memory_type)
     SETTING_FORWARD_BOOL(m_gpu, ReadbackDirectRead, readback_direct_read)
     SETTING_FORWARD(m_gpu, ReadbackDirectMaxKb, readback_direct_max_kb)
     SETTING_FORWARD(m_gpu, ReadbackCopyLanes, readback_copy_lanes)

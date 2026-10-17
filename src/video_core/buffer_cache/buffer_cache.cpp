@@ -77,21 +77,15 @@ std::optional<u32> FindMemoryType(const vk::PhysicalDeviceMemoryProperties& prop
     return std::nullopt;
 }
 
-// arena_memory_type: 0 auto, 1 device local, 2 host visible device local, 3 host cached. Auto
-// takes host visible device memory when its heap is the device's video memory (integrated GPUs,
-// resizable BAR) and leaves a BAR carveout of a few hundred MiB alone.
+// Host visible device memory serves direct readbacks when its heap is the device's video memory
+// (integrated GPUs, resizable BAR); a BAR carveout of a few hundred MiB is left alone.
 static std::optional<u32> FindHostVisibleArenaType(const Vulkan::Instance& instance,
-                                                   u32 memory_type_bits, u32 mode) {
+                                                   u32 memory_type_bits) {
     using Flags = vk::MemoryPropertyFlagBits;
-    if (mode == 1) {
-        return std::nullopt;
-    }
     const auto& props = instance.GetMemoryProperties();
-    const auto wanted = mode == 3
-                            ? Flags::eHostVisible | Flags::eHostCoherent | Flags::eHostCached
-                            : Flags::eDeviceLocal | Flags::eHostVisible | Flags::eHostCoherent;
-    const auto type = FindMemoryType(props, wanted, memory_type_bits);
-    if (!type || mode != 0 || instance.IsIntegrated()) {
+    const auto type = FindMemoryType(
+        props, Flags::eDeviceLocal | Flags::eHostVisible | Flags::eHostCoherent, memory_type_bits);
+    if (!type || instance.IsIntegrated()) {
         return type;
     }
     u64 largest_local_heap = 0;
@@ -143,8 +137,7 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
     arena_memory_type_index = arena_device_type_index;
     readback_offload = EmulatorSettings.IsReadbackOffload();
     if (readback_offload) {
-        if (const auto host_type = FindHostVisibleArenaType(
-                instance, reqs.memoryTypeBits, EmulatorSettings.GetArenaMemoryType())) {
+        if (const auto host_type = FindHostVisibleArenaType(instance, reqs.memoryTypeBits)) {
             arena_memory_type_index = *host_type;
             arena_host_visible = true;
         }
