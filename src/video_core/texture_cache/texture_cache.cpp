@@ -1509,7 +1509,7 @@ void TextureCache::MaybeUpdateImage(ImageId image_id) {
 }
 
 void TextureCache::AssociateStencil(ImageId depth_id, const ImageInfo& depth_info) {
-    if (depth_info.stencil_addr == 0) {
+    if (depth_info.stencil_addr == 0 || depth_info.stencil_addr == depth_info.guest_address) {
         return;
     }
     ImageId stencil_id{};
