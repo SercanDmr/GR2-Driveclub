@@ -197,7 +197,8 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
 
     scheduler.SetSubmitCallback([this](Vulkan::SubmitInfo& info) {
         runtime.FlushBarriers();
-        buffer_cache.MoveInFlightWrites();
+        // A packet still being bound records into the batch this submit opens.
+        StampBoundWrites(false);
         buffer_cache.SubmitPendingArenaBinds(info);
     });
 }
@@ -573,16 +574,6 @@ void Rasterizer::EliminateFastClear() {
     ScopeMarkerEnd();
 }
 
-// Commits the GPU writes a packet marked while binding on every exit of the packet. The record
-// commits itself before the flush polls that follow it, which would otherwise move the writes
-// just recorded into the next batch; the guard covers the exits before the record.
-struct GpuWriteCommit {
-    VideoCore::BufferCache& buffer_cache;
-    ~GpuWriteCommit() {
-        buffer_cache.CommitGpuWrites();
-    }
-};
-
 void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
     RENDERER_TRACE;
 
@@ -630,7 +621,6 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
         glue_entry_miss_ += glue_mode_ != 0 && !glue;
         rt_ok = PrepareRenderState(pipeline);
     }
-    GpuWriteCommit write_commit{buffer_cache};
     if (!BindResources(pipeline)) {
         return;
     }
@@ -705,7 +695,6 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
                     instance_offset);
     }
     DebugState.IncDrawCall();
-    buffer_cache.CommitGpuWrites();
 
     ResetBindings(false);
     // The flushes submit; they must not run under the guest-copy shared lock.
@@ -851,7 +840,6 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
     // pipeline, so the glue is disarmed rather than re-certified here.
     glue_.armed = false;
     PrepareRenderState(pipeline);
-    GpuWriteCommit write_commit{buffer_cache};
     if (!BindResources(pipeline)) {
         return;
     }
@@ -937,7 +925,6 @@ void Rasterizer::DispatchDirect() {
         copy_scope.emplace(Core::Memory::Instance());
     }
 
-    GpuWriteCommit write_commit{buffer_cache};
     if (!BindResources(pipeline)) {
         return;
     }
@@ -954,7 +941,6 @@ void Rasterizer::DispatchDirect() {
     cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline->Handle());
     cmdbuf.dispatch(cs_program.dim_x, cs_program.dim_y, cs_program.dim_z);
     DebugState.IncDispatch();
-    buffer_cache.CommitGpuWrites();
 
     ResetBindings(true);
     // The flushes submit; they must not run under the guest-copy shared lock.
@@ -979,7 +965,6 @@ void Rasterizer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
         ArmCopyHold();
     }
 
-    GpuWriteCommit write_commit{buffer_cache};
     if (!BindResources(pipeline)) {
         return;
     }
@@ -1477,6 +1462,7 @@ void Rasterizer::BindingSkipProbeBody(const Pipeline* pipeline) {
 }
 
 bool Rasterizer::BindResources(const Pipeline* pipeline) {
+    bind_tick_ = scheduler.CurrentTick();
     draw_samples_target_ = false;
     if (pipeline->IsCompute() && TakeComputeShortcut(pipeline)) [[unlikely]] {
         return false;
@@ -1854,9 +1840,29 @@ void Rasterizer::BindIndexBuffer(u32 index_offset, bool is_indirect) {
     }
 }
 
+void Rasterizer::StampBoundWrites(bool mark) {
+    for (const auto [buffer, offset, size, src_access] : bound_buffers) {
+        if (buffer->mem_type != VideoCore::MemoryType::Sparse ||
+            !(src_access & vk::AccessFlagBits2::eShaderWrite)) {
+            continue;
+        }
+        const VAddr addr = buffer->CpuAddr() + offset;
+        if (mark) {
+            buffer_cache.RestampGpuWrite(addr, size);
+        } else {
+            buffer_cache.StampGpuWrite(addr, size);
+        }
+    }
+}
+
 void Rasterizer::ResetBindings(bool is_compute) {
     for (auto& image_id : bound_images) {
         texture_cache.GetImage(image_id).binding = {};
+    }
+    // A flush between the binds and the record lets a readback on this thread consume the
+    // packet's own writes.
+    if (scheduler.CurrentTick() != bind_tick_) {
+        StampBoundWrites(true);
     }
     for (const auto [buffer, offset, size, src_access] : bound_buffers) {
         const auto dst_stage = is_compute ? vk::PipelineStageFlagBits2::eComputeShader
@@ -3009,7 +3015,6 @@ void Rasterizer::FillBuffer(VAddr address, u32 num_bytes, u32 value, bool is_gds
                                          VideoCore::ObtainBufferFlags::IsWritten);
     }();
     runtime.FillBuffer(buffer, offset, num_bytes, value);
-    buffer_cache.CommitGpuWrites();
 }
 
 void Rasterizer::CopyBuffer(VAddr dst, VAddr src, u32 num_bytes, bool dst_gds, bool src_gds) {
@@ -3046,7 +3051,6 @@ void Rasterizer::CopyBuffer(VAddr dst, VAddr src, u32 num_bytes, bool dst_gds, b
         .size = num_bytes,
     };
     runtime.CopyBuffer(src_buffer, dst_buffer, std::span{&copy, 1});
-    buffer_cache.CommitGpuWrites();
 }
 
 u32 Rasterizer::ReadDataFromGds(u32 gds_offset) {

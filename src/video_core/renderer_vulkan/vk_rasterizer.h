@@ -168,6 +168,9 @@ private:
     void BindVertexBuffers(const GraphicsPipeline* pipeline);
     void BindIndexBuffer(u32 index_offset = 0, bool is_indirect = false);
 
+    /// Stamps the arena writes of the packet being bound with the open batch's tick. If mark is
+    /// true, their pages are marked GPU modified again as well.
+    void StampBoundWrites(bool mark);
     void ResetBindings(bool is_compute);
 
     bool IsComputeMetaClear(const Pipeline* pipeline);
@@ -228,6 +231,8 @@ private:
     u64 flush_tick_{};
     // The tick a readback thread asked RequestFlush to submit; 0 = none pending.
     u64 flush_request_tick_{};
+    // The tick when the packet being bound started its binds, compared after its record.
+    u64 bind_tick_{};
     bool tracker_lock_spin_{};
     u64 interval_flushes_{};
     // ring_drain_flush_draws: boot-latched, clamped to >= 32 and rounded up to
