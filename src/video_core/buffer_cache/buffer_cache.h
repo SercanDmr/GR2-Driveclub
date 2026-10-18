@@ -4,7 +4,6 @@
 #pragma once
 
 #include <atomic>
-#include <condition_variable>
 #include <deque>
 #include <mutex>
 #include <optional>
@@ -63,6 +62,8 @@ class BufferCache {
 public:
     /// A readback serves the GPU writes of one window at a time.
     static constexpr u64 READBACK_WINDOW_SIZE = 512_KB;
+    /// Readbacks own memory in units of this size, one word of the tracker's page bits.
+    static constexpr u64 READBACK_LOCK_SIZE = 256_KB;
 
     explicit BufferCache(const Vulkan::Instance& instance, Vulkan::Scheduler& scheduler,
                          Vulkan::Runtime& runtime, AmdGpu::Liverpool* liverpool,
@@ -114,9 +115,10 @@ public:
     /// owns the image's readback windows.
     void ReadEdgeImagePages(const Image& image);
 
-    /// One downloader owns a range at a time: a GPU thread download from its record to its
-    /// write-back, a faulting thread from its copy to the consume, the texture cache across an
-    /// image download. Acquiring waits for the current owners.
+    /// One downloader owns memory at a time, in units of READBACK_LOCK_SIZE: a GPU thread
+    /// download from its record to its write-back, a faulting thread from its copy to the
+    /// consume, the texture cache across an image download. Acquiring waits for the current
+    /// owners. Called on the GPU thread.
     void AcquireWindows(VAddr device_addr, u64 size);
     void ReleaseWindows(VAddr device_addr, u64 size);
 
@@ -237,13 +239,6 @@ private:
     /// lanes; nullptr while binds of the arena are still queued for the next submit.
     const Buffer* ArenaOf(VAddr device_addr, u64& bind_tick);
 
-    /// Erases the GPU writes of the range that the GPU had completed at known_tick and clears the
-    /// pages left without one; a write marked since keeps its pages GPU modified.
-    void ConsumeGpuWrites(VAddr device_addr, u64 size, u64 known_tick);
-
-    /// Requires window_mutex.
-    bool WindowsOwned(VAddr device_addr, u64 size) const;
-
     bool SynchronizeMemory(const Buffer* arena, VAddr device_addr, u32 size, bool is_written,
                            bool is_texel_buffer);
 
@@ -265,10 +260,6 @@ private:
     StreamBuffer stream_buffer;
     Buffer gds_buffer;
     std::unique_ptr<Buffer> null_index_buffer;
-    /// GPU written ranges with the scheduler tick of the batch holding the write; the newest
-    /// write of a byte sets its tick. Guarded by gpu_writes_mutex.
-    RangeMap<u64> gpu_writes;
-    std::mutex gpu_writes_mutex;
     struct Range {
         VAddr addr;
         u64 size;
@@ -322,9 +313,6 @@ private:
     FastPathStats fast_stats{};
 
     bool readback_offload{};
-    std::mutex window_mutex;
-    std::condition_variable window_cv;
-    boost::container::small_vector<Range, 8> window_owners;
     /// Bumped from the faulting threads and the GPU thread alike.
     std::atomic<u64> offload_faults{};
     std::atomic<u64> offload_waits{};
