@@ -29,6 +29,20 @@ https://www.youtube.com/watch?v=O8z6QPOaGDg&list=PLOgHncbXc__M&pp=sAgC
 | RAM | 12 GB | 12 GB | 12 GB | 12 GB |
 | Storage | SSD | SSD | SSD | SSD |
 
+**Included Features for Gravity Rush 2 and Gravity Rush Remastered**
+- Feature complete fps patches (60fps, 40fps, 90fps, 120fps, 144fps)
+- Feature complete resolution patches (240p-8K)
+- Feature complete ultrawide patches (21:9,32:9,32:10,16:10...)
+- Feature complete online mode
+- Feature complete photo mode, photo export and ingame photo gallery
+- New performance patches and the ability to disable motion blur
+- Infinite Gems patch
+- Queen Alua costume swap patch
+- Elektricitie costume swap patch
+- The Other costume swap patch
+- Raven costume swap patch
+  
+
 <h1 align="center">
   <br>
   <a href="https://shadps4.net/"><img src="https://github.com/shadps4-emu/shadPS4/blob/main/.github/shadps4.png" width="220"></a>
