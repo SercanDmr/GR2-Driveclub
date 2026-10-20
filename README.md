@@ -43,7 +43,7 @@ https://www.youtube.com/watch?v=O8z6QPOaGDg&list=PLOgHncbXc__M&pp=sAgC
 - Raven costume swap patch
 
 **Included General QOL features**
-- massive genearl performance improvements
+- massive general performance improvements
 - massive performance improvements with precise (offloaded) readbacks
 - massive performance improvements with asynchronous readback linear images
 - touchpad press, double finger touchpad and single finger touchpad press mapping
