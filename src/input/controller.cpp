@@ -339,7 +339,7 @@ void GameControllers::ResetLightbarColors() {
 }
 
 bool GameController::SetVibration(u8 smallMotor, u8 largeMotor) {
-    if (m_sdl_gamepad != nullptr) {
+    if (m_sdl_gamepad != nullptr && EmulatorSettings.IsVibrationEnabled()) {
         return SDL_RumbleGamepad(m_sdl_gamepad, (smallMotor / 255.0f) * 0xFFFF,
                                  (largeMotor / 255.0f) * 0xFFFF, -1);
     }

@@ -356,6 +356,7 @@ struct InputSettings {
     Setting<s32> camera_id{-1};
     Setting<bool> use_mice_as_mice{false};
     Setting<bool> use_keyboard_as_keyboard{false};
+    Setting<bool> vibration_enabled{true}; // specific
 
     std::vector<OverrideItem> GetOverrideableFields() const {
         return std::vector<OverrideItem>{
@@ -379,7 +380,8 @@ struct InputSettings {
             make_override<InputSettings>("camera_id", &InputSettings::camera_id),
             make_override<InputSettings>("use_mice_as_mice", &InputSettings::use_mice_as_mice),
             make_override<InputSettings>("use_keyboard_as_keyboard",
-                                         &InputSettings::use_keyboard_as_keyboard)};
+                                         &InputSettings::use_keyboard_as_keyboard),
+            make_override<InputSettings>("vibration_enabled", &InputSettings::vibration_enabled)};
     }
 };
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(InputSettings, cursor_state, cursor_hide_timeout,
@@ -388,7 +390,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(InputSettings, cursor_state, cursor_hide_time
                                    gyro_invert_x, gyro_invert_roll, use_unified_input_config,
                                    default_controller_id, background_controller_input,
                                    ime_accessibility_enabled, ime_url_mail_short_panel, camera_id,
-                                   is_circle_enter, use_mice_as_mice, use_keyboard_as_keyboard)
+                                   is_circle_enter, use_mice_as_mice, use_keyboard_as_keyboard,
+                                   vibration_enabled)
 // -------------------------------
 // Audio settings
 // -------------------------------
@@ -1290,6 +1293,7 @@ public:
     SETTING_FORWARD_BOOL(m_input, CircleEnter, is_circle_enter)
     SETTING_FORWARD_BOOL(m_input, MiceUsedAsMice, use_mice_as_mice)
     SETTING_FORWARD_BOOL(m_input, KeyboardUsedAsKeyboard, use_keyboard_as_keyboard)
+    SETTING_FORWARD_BOOL(m_input, VibrationEnabled, vibration_enabled)
 
     // Vulkan settings
     SETTING_FORWARD(m_vulkan, GpuId, gpu_id)
