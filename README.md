@@ -2,7 +2,7 @@
 SPDX-FileCopyrightText: 2026 shadPS4 Emulator Project
 SPDX-License-Identifier: GPL-2.0-or-later
 -->
-While GR2fork is focused on improving emulation of Gravity Rush 2 and Gravity Rush Remastered, it intends to remain architecturally conformant with upstream while maintaining general performance improvements in most or all games. Experimental optimizations for GPU emulation in both performance and accuracy aspects are applied here in preparation for merging with upstream. Expect frequent syncing with upstream.   
+While GR2fork is focused on improving emulation of Gravity Rush 2 and Gravity Rush Remastered, it's priority is to remain architecturally conformant with upstream while maintaining general performance improvements in most or all games. Experimental optimizations for GPU emulation in both performance and accuracy aspects are applied here in preparation for merging with upstream. Expect frequent syncing with upstream.   
 
 **Set up GR2fork with the Following Playlist:**
 https://www.youtube.com/watch?v=O8z6QPOaGDg&list=PLOgHncbXc__M&pp=sAgC
@@ -41,7 +41,12 @@ https://www.youtube.com/watch?v=O8z6QPOaGDg&list=PLOgHncbXc__M&pp=sAgC
 - Elektricitie costume swap patch
 - The Other costume swap patch
 - Raven costume swap patch
-  
+
+**Included General QOL features**
+- touchpad press, double finger touchpad and single finger touchpad press mapping
+- touchpad swipe mapping
+- gamepad shake mapping
+- hold L3 to convert face buttons to directional touchpad swipes (can be mapped to whatever)
 
 <h1 align="center">
   <br>
