@@ -712,6 +712,7 @@ struct GPUSettings {
     Setting<int> rcas_attenuation{250};
     Setting<bool> userfaultfd{false};
     Setting<bool> inline_fetch_shader{false};
+    Setting<bool> fast_shader_math{false};
 
 #define GPU_OVERRIDE(field) make_override<GPUSettings>(#field, &GPUSettings::field)
     std::vector<OverrideItem> GetOverrideableFields() const {
@@ -803,6 +804,7 @@ struct GPUSettings {
             make_override<GPUSettings>("vblank_frequency", &GPUSettings::vblank_frequency),
             make_override<GPUSettings>("userfaultfd", &GPUSettings::userfaultfd),
             make_override<GPUSettings>("inline_fetch_shader", &GPUSettings::inline_fetch_shader),
+            make_override<GPUSettings>("fast_shader_math", &GPUSettings::fast_shader_math),
         };
     }
 #undef GPU_OVERRIDE
@@ -836,7 +838,7 @@ struct GPUSettings {
     runtime_info_stamp_gate, userfaultfd, gpu_thread_core_reserve, \
     vertex_layout_memo, covered_range_skip, residency_bitmap, \
     readback_linear_images_async, inline_fetch_shader, stream_barrier_skip, \
-    clean_sync_peek, readback_offload
+    clean_sync_peek, readback_offload, fast_shader_math
 // clang-format on
 template <
     typename BasicJsonType,
@@ -1251,6 +1253,7 @@ public:
     SETTING_FORWARD_BOOL_READONLY(m_gpu, PatchShaders, patch_shaders)
     SETTING_FORWARD_BOOL(m_gpu, UserfaultfdTracking, userfaultfd)
     SETTING_FORWARD_BOOL_READONLY(m_gpu, InlineFetchShader, inline_fetch_shader)
+    SETTING_FORWARD_BOOL_READONLY(m_gpu, FastShaderMath, fast_shader_math)
 
     u32 GetVblankFrequency() {
         if (m_gpu.vblank_frequency.value < 30) {

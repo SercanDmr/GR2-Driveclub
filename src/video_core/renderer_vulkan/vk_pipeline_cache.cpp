@@ -1001,6 +1001,7 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
         .needs_unorm_fixup = instance.GetDriverID() == vk::DriverId::eMesaKosmickrisp,
         .needs_clip_distance_emulation = instance.GetDriverID() == vk::DriverId::eNvidiaProprietary,
         .supports_shader_stencil_export = instance_.IsShaderStencilExportSupported(),
+        .fast_shader_math = EmulatorSettings.IsFastShaderMath(),
     };
     spec_mru_perm_probe = EmulatorSettings.IsSpecMruPermProbe();
     // The stamp arms once at Liverpool construction; a runtime-enabled
