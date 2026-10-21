@@ -30,7 +30,7 @@ void SetThreadName(void* thread, const char* name);
 /// Linux and Windows; a no-op returning false elsewhere.
 bool SetCurrentThreadAffinityMask(u64 mask);
 
-/// Turns the GPU command thread core reservation on (gpu_thread_core_reserve). While it is off
+/// Turns the GPU command thread core reservation on (one_core_gpu_thread_pin). While it is off
 /// every mask below reads 0 and the walk does nothing.
 void SetCoreReservationEnabled(bool enabled);
 

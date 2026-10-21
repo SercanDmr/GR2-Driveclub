@@ -293,7 +293,7 @@ Liverpool::Liverpool() {
     gfx_stamp.classify_rt = gfx_stamp.active && EmulatorSettings.IsRtStateStamp();
     occlude_all_ = EmulatorSettings.IsOccludeAll();
     reg_run_ = EmulatorSettings.IsParserRegRun();
-    Common::SetCoreReservationEnabled(EmulatorSettings.IsGpuThreadCoreReserve());
+    Common::SetCoreReservationEnabled(EmulatorSettings.IsOneCoreGpuThreadPin());
     process_thread = std::jthread{std::bind_front(&Liverpool::Process, this)};
 }
 
@@ -353,7 +353,7 @@ void Liverpool::Process(std::stop_token stoken) {
 #ifdef __linux__
     gpu_tid = gettid();
 #endif
-    // gpu_thread_core_reserve: own a physical core, strip it from every other thread, and keep
+    // one_core_gpu_thread_pin: own a physical core, strip it from every other thread, and keep
     // stripping, since Windows threads do not inherit their creator's affinity.
     if (const u64 mask = Common::GetReservedCoreMask()) {
         Common::SetCurrentThreadAffinityMask(mask);
