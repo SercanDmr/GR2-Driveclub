@@ -60,11 +60,12 @@ TextureCache::TextureCache(const Vulkan::Instance& instance_, Vulkan::Scheduler&
       blit_helper{instance, scheduler},
       tile_manager{instance, scheduler, runtime, buffer_cache.GetStreamBuffer()},
       // Gravity Rush Remastered always reads linear images back asynchronously and Gravity Rush 2
-      // never does, whatever the settings say.
-      readback_linear_images{EmulatorSettings.IsReadbackLinearImagesEnabled() ||
-                             Common::IsGravityRushRemastered()},
+      // never reads them back, whatever the settings say.
+      readback_linear_images{
+          (EmulatorSettings.IsReadbackLinearImagesEnabled() || Common::IsGravityRushRemastered()) &&
+          !Common::IsGravityRush2()},
       readback_linear_images_async{
-          readback_linear_images && !Common::IsGravityRush2() &&
+          readback_linear_images &&
           (EmulatorSettings.IsReadbackLinearImagesAsync() || Common::IsGravityRushRemastered())},
       image_fast_state{EmulatorSettings.IsImageFastState()},
       view_memo{EmulatorSettings.IsTextureViewMemo()},
@@ -99,8 +100,8 @@ TextureCache::TextureCache(const Vulkan::Instance& instance_, Vulkan::Scheduler&
     if (Common::IsGravityRushRemastered()) {
         LOG_INFO(Render_Vulkan, "Gravity Rush Remastered: linear images are read back "
                                 "asynchronously");
-    } else if (Common::IsGravityRush2() && readback_linear_images) {
-        LOG_INFO(Render_Vulkan, "Gravity Rush 2: linear images are read back synchronously");
+    } else if (Common::IsGravityRush2()) {
+        LOG_INFO(Render_Vulkan, "Gravity Rush 2: linear images are not read back");
     }
     u32 max_samplers = instance.GetMaxSamplerAllocationCount();
     trigger_gc_samplers = max_samplers * 3 / 4;
