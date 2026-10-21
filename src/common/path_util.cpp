@@ -12,6 +12,7 @@
 #ifdef __APPLE__
 #include <CoreFoundation/CFBundle.h>
 #include <dlfcn.h>
+#include <mach-o/dyld.h>
 #include <sys/param.h>
 #endif
 
@@ -85,9 +86,47 @@ static std::optional<std::filesystem::path> GetBundleParentDirectory() {
 }
 #endif
 
+// The folder the emulator was started from: the one holding the AppImage, the app bundle or the
+// executable.
+static std::optional<fs::path> GetExecutableDirectory() {
+#if defined(__linux__)
+    if (const char* appimage = getenv("APPIMAGE"); appimage != nullptr && *appimage != '\0') {
+        return fs::path(appimage).parent_path();
+    }
+    std::error_code ec;
+    const fs::path exe = fs::read_symlink("/proc/self/exe", ec);
+    if (!ec) {
+        return exe.parent_path();
+    }
+#elif defined(_WIN32)
+    wchar_t exe[MAX_PATH];
+    const DWORD length = GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    if (length > 0 && length < MAX_PATH) {
+        return fs::path(exe).parent_path();
+    }
+#elif defined(__APPLE__)
+    char exe[MAXPATHLEN];
+    u32 size = sizeof(exe);
+    if (_NSGetExecutablePath(exe, &size) == 0) {
+        const fs::path dir = fs::path(exe).parent_path();
+        if (dir.filename() == "MacOS" && dir.parent_path().filename() == "Contents") {
+            return GetBundleParentDirectory();
+        }
+        return dir;
+    }
+#endif
+    return std::nullopt;
+}
+
 static auto UserPaths = [] {
-    // Try the portable user directory first.
+    // The portable user directory next to the executable comes first, so a start from any
+    // working directory finds it; then the one in the working directory, which the launcher
+    // sets to its own folder for the versions it keeps under it.
     auto user_dir = std::filesystem::current_path() / PORTABLE_DIR;
+    if (const auto exe_dir = GetExecutableDirectory();
+        exe_dir && std::filesystem::exists(*exe_dir / PORTABLE_DIR)) {
+        user_dir = *exe_dir / PORTABLE_DIR;
+    }
     if (!std::filesystem::exists(user_dir)) {
         // If it doesn't exist, use the standard path for the platform instead.
         // NOTE: On Windows we currently just create the portable directory instead.
