@@ -687,6 +687,10 @@ public:
     bool BindNoopMemo() const noexcept {
         return bind_noop;
     }
+    /// Whether linear images are read back, after the per-title overrides.
+    bool ReadbackLinearImages() const noexcept {
+        return readback_linear_images;
+    }
     bool MemoFirst() const noexcept {
         return memo_first;
     }

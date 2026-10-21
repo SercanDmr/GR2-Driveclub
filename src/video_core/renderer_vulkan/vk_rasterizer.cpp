@@ -104,7 +104,7 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
     const bool sc_enabled = sc_mode != AdaptiveSkipCachesMode::SkipCachesDisabled;
     skipcache.Init(static_cast<Skipcache::Mode>(sc_mode));
     skipcache.RegisterInvalidate(&Rasterizer::BrInvalidateThunk, this);
-    br_readback_gate_ = EmulatorSettings.IsReadbackLinearImagesEnabled();
+    br_readback_gate_ = texture_cache.ReadbackLinearImages();
     batch_copy_lock_ = EmulatorSettings.IsGuestCopyLockBatch();
     vertex_layout_memo_ = EmulatorSettings.IsVertexLayoutMemo();
     bind_prefetch_ = EmulatorSettings.IsBindLinePrefetch();

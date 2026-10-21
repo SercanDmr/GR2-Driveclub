@@ -12,6 +12,7 @@
 #include "common/assert.h"
 #include "common/debug.h"
 #include "common/div_ceil.h"
+#include "common/gravity_rush.h"
 #include "common/rdtsc.h"
 #include "common/scope_exit.h"
 #include "core/emulator_settings.h"
@@ -58,9 +59,13 @@ TextureCache::TextureCache(const Vulkan::Instance& instance_, Vulkan::Scheduler&
       slot_image_views{MAX_IMAGE_VIEWS}, slot_samplers{MAX_SAMPLERS},
       blit_helper{instance, scheduler},
       tile_manager{instance, scheduler, runtime, buffer_cache.GetStreamBuffer()},
-      readback_linear_images{EmulatorSettings.IsReadbackLinearImagesEnabled()},
-      readback_linear_images_async{readback_linear_images &&
-                                   EmulatorSettings.IsReadbackLinearImagesAsync()},
+      // Gravity Rush Remastered always reads linear images back asynchronously and Gravity Rush 2
+      // never does, whatever the settings say.
+      readback_linear_images{EmulatorSettings.IsReadbackLinearImagesEnabled() ||
+                             Common::IsGravityRushRemastered()},
+      readback_linear_images_async{
+          readback_linear_images && !Common::IsGravityRush2() &&
+          (EmulatorSettings.IsReadbackLinearImagesAsync() || Common::IsGravityRushRemastered())},
       image_fast_state{EmulatorSettings.IsImageFastState()},
       view_memo{EmulatorSettings.IsTextureViewMemo()},
       findimg_trust_gen{EmulatorSettings.IsFindimgTrustGen()},
@@ -90,6 +95,12 @@ TextureCache::TextureCache(const Vulkan::Instance& instance_, Vulkan::Scheduler&
     if (EmulatorSettings.IsBindNoopMemo() && !bind_noop) {
         LOG_WARNING(Render_Vulkan,
                     "bind no-op memo needs texture_view_memo; the transit probe runs unchanged");
+    }
+    if (Common::IsGravityRushRemastered()) {
+        LOG_INFO(Render_Vulkan, "Gravity Rush Remastered: linear images are read back "
+                                "asynchronously");
+    } else if (Common::IsGravityRush2() && readback_linear_images) {
+        LOG_INFO(Render_Vulkan, "Gravity Rush 2: linear images are read back synchronously");
     }
     u32 max_samplers = instance.GetMaxSamplerAllocationCount();
     trigger_gc_samplers = max_samplers * 3 / 4;
