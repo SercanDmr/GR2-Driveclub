@@ -854,6 +854,7 @@ set(COMMON src/common/logging/classes.cpp
            src/common/error.h
            src/common/fixed_value.h
            src/common/func_traits.h
+           src/common/gravity_rush.h
            src/common/native_clock.cpp
            src/common/native_clock.h
            src/common/path_util.cpp
