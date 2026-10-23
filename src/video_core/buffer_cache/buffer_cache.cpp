@@ -960,8 +960,16 @@ void BufferCache::SubmitPendingArenaBinds(Vulkan::SubmitInfo& info) {
     };
 
     info.AddWait(signal_sema, signal_tick);
-    auto submit_result = instance.GetGraphicsQueue().bindSparse(sparse_info);
-    ASSERT_MSG(submit_result != vk::Result::eErrorDeviceLost, "Device lost during submit");
+    {
+        // A record thread submits under submit_mutex off this thread, so the bind takes it too;
+        // an inline scheduler already holds it around the whole submit.
+        std::unique_lock submit_lock{Vulkan::Scheduler::submit_mutex, std::defer_lock};
+        if (scheduler.HasRecordingThread()) {
+            submit_lock.lock();
+        }
+        auto submit_result = instance.GetGraphicsQueue().bindSparse(sparse_info);
+        ASSERT_MSG(submit_result != vk::Result::eErrorDeviceLost, "Device lost during submit");
+    }
 
     std::scoped_lock lk{arena_mutex};
     pending_binds.clear();

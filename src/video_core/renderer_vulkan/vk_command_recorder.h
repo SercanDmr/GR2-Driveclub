@@ -116,6 +116,9 @@ public:
     void endDebugUtilsLabelEXT() const;
 
 private:
+    /// The current command buffer, read directly from the scheduler for the inline branches.
+    vk::CommandBuffer Raw() const;
+
     Scheduler* scheduler;
 };
 
