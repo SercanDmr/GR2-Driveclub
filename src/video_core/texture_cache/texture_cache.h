@@ -467,10 +467,6 @@ private:
         }
     }
 
-    /// Hashes guest memory through the never-protected backing view, so GPU modified pages are
-    /// read without a readback. Returns 0 when part of the range has no backing.
-    u64 HashGuestMemory(VAddr addr, u64 size);
-
     /// Copies image memory back to CPU.
     void DownloadImageMemory(ImageId image_id,
                              DownloadMemoryFlags flags = DownloadMemoryFlags::None);
@@ -519,6 +515,9 @@ private:
     void UntrackImageHead(ImageId image_id);
     void UntrackImageTail(ImageId image_id);
 
+    /// Marks the image CPU dirty if the guest wrote to its untracked head or tail page.
+    void MarkDirtyIfEdgesModified(Image& image);
+
     void MarkAsMaybeDirty(ImageId image_id, Image& image);
 
     void RegisterMeta(VAddr address, MetaDataInfo info);
@@ -532,12 +531,7 @@ private:
     /// walk relinks the entry when it meets it.
     void TouchImage(Image& image) {
         // Image is still valid
-        if (True(image.flags & ImageFlagBits::MaybeGpuDirty)) {
-            // The guest fault paths set the CPU dirty bits under the image mutex.
-            std::scoped_lock lk{image.mutex};
-            image.flags &= ~ImageFlagBits::MaybeGpuDirty;
-            image.gpu_hash = 0;
-        }
+        image.gpu_hash = 0;
         if (lru_lazy_touch) {
             image.gc_tick_accessed_last = gc_tick;
             return;
