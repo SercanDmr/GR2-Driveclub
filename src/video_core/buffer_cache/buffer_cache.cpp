@@ -242,10 +242,8 @@ u64 BufferCache::CollectWrites(const Buffer* arena, VAddr device_addr, u64 size,
 void BufferCache::WriteBack(VAddr arena_base, const ReadbackCopies& copies, const u8* mapped,
                             u64 staging_offset) const {
     for (const auto& copy : copies) {
-        const VAddr dst_addr = arena_base + copy.srcOffset;
-        const u8* data = mapped + (copy.dstOffset - staging_offset);
-        texture_cache.MarkAsGuestMemoryChanged(dst_addr, data, copy.size);
-        memory->TryWriteBacking(std::bit_cast<u8*>(dst_addr), data, copy.size);
+        memory->TryWriteBacking(std::bit_cast<u8*>(arena_base + copy.srcOffset),
+                                mapped + (copy.dstOffset - staging_offset), copy.size);
     }
 }
 
@@ -489,7 +487,6 @@ bool BufferCache::DirectRead(VAddr device_addr, u64 size) {
         if (num_spans == 0) {
             return false;
         }
-        texture_cache.MarkAsGuestMemoryChanged(device_addr, src, chunk);
         for (u32 i = 0; i < num_spans; ++i) {
             Common::StreamCopy(spans[i].ptr, src, spans[i].size);
             src += spans[i].size;

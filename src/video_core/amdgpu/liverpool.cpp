@@ -1079,11 +1079,7 @@ std::span<const u32> Liverpool::RunGraphicsPackets(std::span<const u32> dcb, uin
         case PM4ItOpcode::EventWriteEos: {
             const auto* event_eos = reinterpret_cast<const PM4CmdEventWriteEos*>(header);
             FenceDrainAndDownload(rasterizer);
-            event_eos->SignalFence([this](void* address, u64 data, u32 num_bytes) {
-                if (rasterizer) {
-                    rasterizer->GetTextureCache().MarkAsGuestMemoryChanged(
-                        std::bit_cast<VAddr>(address), &data, num_bytes);
-                }
+            event_eos->SignalFence([](void* address, u64 data, u32 num_bytes) {
                 auto* memory = Core::Memory::Instance();
                 ASSERT(memory->TryWriteBacking(address, &data, num_bytes));
             });
@@ -1101,11 +1097,7 @@ std::span<const u32> Liverpool::RunGraphicsPackets(std::span<const u32> dcb, uin
             const auto* event_eop = reinterpret_cast<const PM4CmdEventWriteEop*>(header);
             FenceDrainAndDownload(rasterizer);
             event_eop->SignalFence(
-                [this](void* address, u64 data, u32 num_bytes) {
-                    if (rasterizer) {
-                        rasterizer->GetTextureCache().MarkAsGuestMemoryChanged(
-                            std::bit_cast<VAddr>(address), &data, num_bytes);
-                    }
+                [](void* address, u64 data, u32 num_bytes) {
                     auto* memory = Core::Memory::Instance();
                     ASSERT(memory->TryWriteBacking(address, &data, num_bytes));
                 },

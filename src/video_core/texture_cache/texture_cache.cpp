@@ -72,24 +72,6 @@ static u64 HashBackingMemory(VAddr virtual_addr, u64 size) {
     return hash;
 }
 
-static bool BackingMemoryDiffers(VAddr virtual_addr, const u8* data, u64 size) {
-    const auto& backing_pages = Core::Memory::Instance()->GetAddressSpace().BackingPages();
-    while (size) {
-        const u64 page = virtual_addr >> Core::GUEST_PAGE_BITS;
-        const u64 offset_in_page = virtual_addr & (Core::GUEST_PAGE_SIZE - 1);
-        const u64 compare_size = std::min<u64>(Core::GUEST_PAGE_SIZE - offset_in_page, size);
-        if (auto* entry = backing_pages.find(page); entry && *entry) {
-            if (std::memcmp(*entry + offset_in_page, data, compare_size) != 0) {
-                return true;
-            }
-        }
-        size -= compare_size;
-        virtual_addr += compare_size;
-        data += compare_size;
-    }
-    return false;
-}
-
 TextureCache::TextureCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& scheduler_,
                            Vulkan::Runtime& runtime_, AmdGpu::Liverpool* liverpool_,
                            BufferCache& buffer_cache_, PageManager& page_manager_)
@@ -255,7 +237,6 @@ void TextureCache::DownloadImageMemory(ImageId image_id, DownloadMemoryFlags fla
 
     const auto write_data = [this, image_addr, copy_size, download, discard_buffer_cache, is_sync] {
         download.Invalidate();
-        MarkAsGuestMemoryChanged(image_addr, download.mapped, copy_size);
         Core::Memory::Instance()->TryWriteBacking(std::bit_cast<u8*>(image_addr), download.mapped,
                                                   copy_size);
         Skipcache::Framework::Instance().BumpMemGen();
@@ -333,7 +314,6 @@ bool TextureCache::DownloadImageMemoryAsync(ImageId image_id) {
                                       device_addr = image.info.guest_address,
                                       download_size]() mutable {
         staging->Invalidate(0, download_size);
-        MarkAsGuestMemoryChanged(device_addr, staging->mapped_data.data(), download_size);
         Core::Memory::Instance()->TryWriteBacking(std::bit_cast<u8*>(device_addr),
                                                   staging->mapped_data.data(), download_size);
         Skipcache::Framework::Instance().BumpMemGen();
@@ -433,55 +413,11 @@ void TextureCache::InvalidateMemoryFromGPU(VAddr address, size_t max_size) {
 
 void TextureCache::MarkAsMaybeGpuDirty(VAddr addr, size_t size) {
     ForEachImageInRegion(addr, size, [&](ImageId image_id, Image& image) {
-        // The garbage collector relies on page protection to observe guest writes to the image.
-        if (image.HasGpuValidData()) {
-            TrackImage(image_id);
-        }
-        if (image.gpu_dirty_episode.load(std::memory_order_relaxed) == 0) {
-            image.gpu_dirty_episode.store(++gpu_dirty_episodes, std::memory_order_relaxed);
+        if (image.gpu_hash == 0) {
+            // Read backing pages directly, without faulting through the guest readback path.
+            image.gpu_hash = HashBackingMemory(image.info.guest_address, image.info.guest_size);
         }
     });
-}
-
-void TextureCache::MarkAsGuestMemoryChanged(VAddr addr, const void* data, u64 size) {
-    const auto compare = [&](ImageId, Image& image) {
-        // The stamp carries the episode it was compared in, so a stamp that lands after a touch
-        // ended the episode never matches the next one.
-        const u64 episode = image.gpu_dirty_episode.load(std::memory_order_relaxed);
-        if (episode == 0 ||
-            image.guest_changed_episode.load(std::memory_order_relaxed) == episode) {
-            return;
-        }
-        const VAddr begin = std::max(addr, image.info.guest_address);
-        const VAddr end =
-            std::min<VAddr>(addr + size, image.info.guest_address + image.info.guest_size);
-        if (BackingMemoryDiffers(begin, static_cast<const u8*>(data) + (begin - addr),
-                                 end - begin)) {
-            image.guest_changed_episode.store(episode, std::memory_order_relaxed);
-        }
-    };
-    ForEachImageInRegion(addr, size, compare);
-    // The garbage collector lists the images it compares before it unregisters them.
-    if (!gc_comparing.load(std::memory_order_acquire)) {
-        return;
-    }
-    const auto scan = [&] {
-        for (const ImageId image_id : gc_compare_images) {
-            Image& image = slot_images[image_id];
-            if (image.Overlaps(addr, size)) {
-                compare(image_id, image);
-            }
-        }
-    };
-    if (liverpool == nullptr || liverpool->OnGpuThread()) {
-        scan();
-        return;
-    }
-    // The GPU thread adds to and clears the list under the mutex.
-    std::scoped_lock lk{gc_compare_mutex};
-    if (gc_comparing.load(std::memory_order_relaxed)) {
-        scan();
-    }
 }
 
 void TextureCache::UnmapMemory(VAddr cpu_addr, size_t size) {
@@ -2116,7 +2052,7 @@ void TextureCache::GarbageCollectImages() {
     u64 ticks_to_destroy = 0;
     size_t num_deletions = 0;
     boost::container::small_vector<ImageId, 8> download_queue;
-    gc_comparing.store(true, std::memory_order_release);
+    boost::container::small_vector<ImageId, 8> maybe_download;
 
     const auto configure = [&](bool allow_aggressive) {
         pressured = total_used_memory >= pressure_gc_memory;
@@ -2154,14 +2090,12 @@ void TextureCache::GarbageCollectImages() {
                 std::scoped_lock lk{image.mutex};
                 UntrackImage(image_id);
             }
-            if (image.gpu_dirty_episode.load(std::memory_order_relaxed) != 0) {
-                // Listed before the unregister, so a write-back meanwhile still finds the image.
-                std::scoped_lock lk{gc_compare_mutex};
-                gc_compare_images.push_back(image_id);
+            UnregisterImage(image_id);
+            if (image.gpu_hash != 0) {
+                maybe_download.push_back(image_id);
             } else {
                 download_queue.push_back(image_id);
             }
-            UnregisterImage(image_id);
         } else {
             FreeImage(image_id);
         }
@@ -2231,10 +2165,10 @@ void TextureCache::GarbageCollectImages() {
         }
     };
 
-    if (!gc_compare_images.empty()) {
-        const auto owned = page_ranges(gc_compare_images);
+    if (!maybe_download.empty()) {
+        const auto owned = page_ranges(maybe_download);
         own(owned);
-        for (const auto& image_id : gc_compare_images) {
+        for (const auto& image_id : maybe_download) {
             const auto& image = slot_images[image_id];
             buffer_cache.ReadMemory(image.info.guest_address, image.info.guest_size, false, true,
                                     true);
@@ -2244,20 +2178,15 @@ void TextureCache::GarbageCollectImages() {
         scheduler.DrainPendingOperations();
         release(owned);
 
-        for (const auto& image_id : gc_compare_images) {
+        for (const auto& image_id : maybe_download) {
             const auto& image = slot_images[image_id];
-            if (image.guest_changed_episode.load(std::memory_order_relaxed) ==
-                image.gpu_dirty_episode.load(std::memory_order_relaxed)) {
-                DeleteImage(image_id);
-            } else {
+            const u64 hash = HashBackingMemory(image.info.guest_address, image.info.guest_size);
+            if (image.gpu_hash == hash) {
                 download_queue.push_back(image_id);
+            } else {
+                DeleteImage(image_id);
             }
         }
-    }
-    {
-        std::scoped_lock lk{gc_compare_mutex};
-        gc_comparing.store(false, std::memory_order_relaxed);
-        gc_compare_images.clear();
     }
 
     const auto owned = page_ranges(download_queue);
