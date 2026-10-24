@@ -19,6 +19,7 @@
 #include "common/unique_function.h"
 #include "video_core/amdgpu/cb_db_extent.h"
 #include "video_core/amdgpu/gfx_state_stamp.h"
+#include "video_core/amdgpu/pm4_cmds.h"
 #include "video_core/amdgpu/regs.h"
 
 namespace Vulkan {
@@ -276,6 +277,7 @@ private:
     void DrainCommands();
     void ProcessCeQueue();
     void Process(std::stop_token stoken);
+    void HandleGetLodStats(const PM4CmdGetLodStats* get_lod);
 
     struct GpuQueue {
         std::mutex m_access{};

@@ -530,8 +530,6 @@ private:
     /// With texture_lru_lazy_touch only the gc tick is stamped; the garbage collector
     /// walk relinks the entry when it meets it.
     void TouchImage(Image& image) {
-        // Image is still valid
-        image.gpu_hash = 0;
         if (lru_lazy_touch) {
             image.gc_tick_accessed_last = gc_tick;
             return;
