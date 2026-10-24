@@ -20,6 +20,7 @@
 #include "video_core/buffer_cache/buffer_cache.h"
 #include "video_core/buffer_cache/region_manager.h"
 #include "video_core/buffer_cache/stream_copy_lane.h"
+#include "video_core/gr2_fsr3/gr2_fsr3.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
@@ -589,6 +590,9 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
     if (!pipeline) {
         return;
     }
+    if (Gr2Fsr3::OnDraw(*pipeline, *liverpool, *this, false)) {
+        return;
+    }
 
     // One shared-lock hold covers every guest copy of the whole draw setup;
     // the per-function scopes inside become TLS-flag no-ops. Placed after the
@@ -661,7 +665,8 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
                             bind_image_n_);
     // Dyn term, after the scope replay wrote attachment_feedback_loop.
     if (glue) {
-        const u32 flags = 1u | (u32(attachment_feedback_loop) << 1) | (u32(is_indexed) << 2);
+        const u32 flags = 1u | (u32(attachment_feedback_loop) << 1) | (u32(is_indexed) << 2) |
+                          Gr2Fsr3::DynFlagBits();
         const bool dyn_ok_term =
             dyn_memo_.flags == flags &&
             scheduler.GetDynamicState().invalidate_gen == dyn_memo_.dyn_gen &&
@@ -825,6 +830,9 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
     };
     const GraphicsPipeline* pipeline = pipeline_cache.GetGraphicsPipeline(params);
     if (!pipeline) {
+        return;
+    }
+    if (Gr2Fsr3::OnDraw(*pipeline, *liverpool, *this, true)) {
         return;
     }
 
@@ -2427,6 +2435,7 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
                         liverpool->regs.ta_bc_base.Address());
             ssharp = AmdGpu::Sampler{};
         }
+        Gr2Fsr3::AdjustSampler(ssharp, stage);
         const auto vk_sampler =
             texture_cache.GetSampler(ssharp, liverpool->regs.ta_bc_base, sampler.is_depth);
         AppendImageInfo(image_infos, vk_sampler, VK_NULL_HANDLE, vk::ImageLayout::eGeneral);
@@ -3211,7 +3220,8 @@ bool Rasterizer::UpdateDynamicState(const GraphicsPipeline* pipeline, const bool
         skipcache != nullptr && skipcache->Active() && skipcache->ShouldProbe(CacheId::DynState);
     // is_indexed stays keyed: the primitive-restart ASSERT_MSG is live in
     // release builds, so an indexed transition must re-evaluate it.
-    const u32 flags = 1u | (u32(attachment_feedback_loop) << 1) | (u32(is_indexed) << 2);
+    const u32 flags =
+        1u | (u32(attachment_feedback_loop) << 1) | (u32(is_indexed) << 2) | Gr2Fsr3::DynFlagBits();
     u64 dyn_stamp{}, dyn_gen{}, dyn_pipe_gen{};
     bool dyn_would_hit = false, verifying = false;
     if (probing) {
@@ -3362,6 +3372,7 @@ void Rasterizer::UpdateViewportScissorState() const {
             viewport.y = yoffset - yscale;
             viewport.width = xscale * 2.0f;
             viewport.height = yscale * 2.0f;
+            Gr2Fsr3::JitterViewport(viewport.x, viewport.y);
         }
 
         viewports.push_back(viewport);
