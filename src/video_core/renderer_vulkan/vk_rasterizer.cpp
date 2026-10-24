@@ -590,7 +590,9 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
     if (!pipeline) {
         return;
     }
-    Gr2Fsr3::OnDraw(*pipeline, *liverpool, false);
+    if (Gr2Fsr3::OnDraw(*pipeline, *liverpool, *this, false)) {
+        return;
+    }
 
     // One shared-lock hold covers every guest copy of the whole draw setup;
     // the per-function scopes inside become TLS-flag no-ops. Placed after the
@@ -830,7 +832,9 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
     if (!pipeline) {
         return;
     }
-    Gr2Fsr3::OnDraw(*pipeline, *liverpool, true);
+    if (Gr2Fsr3::OnDraw(*pipeline, *liverpool, *this, true)) {
+        return;
+    }
 
     // One shared-lock hold for the whole setup; placement rationale: see Draw.
     std::optional<Core::MemoryManager::GuestCopyScope> copy_scope;
