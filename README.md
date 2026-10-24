@@ -41,6 +41,8 @@ https://www.youtube.com/watch?v=O8z6QPOaGDg&list=PLOgHncbXc__M&pp=sAgC
 - Elektricitie costume swap patch
 - The Other costume swap patch
 - Raven costume swap patch
+- skip intro patches
+- FSR 3.1 + FSR 4.1 support
 
 **Included General QOL features**
 - massive general performance improvements
