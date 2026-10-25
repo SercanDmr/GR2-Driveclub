@@ -30,6 +30,7 @@ https://www.youtube.com/watch?v=O8z6QPOaGDg&list=PLOgHncbXc__M&pp=sAgC
 | Storage | SSD | SSD | SSD | SSD |
 
 **Included Features for Gravity Rush 2 and Gravity Rush Remastered**
+- Flagship performance, graphical accuracy, and stability
 - Feature complete fps patches (60fps, 40fps, 90fps, 120fps, 144fps)
 - Feature complete resolution patches (240p-8K)
 - Feature complete ultrawide patches (21:9,32:9,32:10,16:10...)
