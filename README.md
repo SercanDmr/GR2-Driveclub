@@ -25,7 +25,7 @@ https://www.youtube.com/watch?v=O8z6QPOaGDg&list=PLOgHncbXc__M&pp=sAgC
 
 | | 1080p 30 (locked) | 1080p 30 (locked) | 4K 60 (locked) | 4K 120 (locked) |
 |---|---|---|---|---|
-| CPU | Ryzen 5 1600 | intel i7 4790 | Ryzen 7 5800X | Ryzen 7 9700x |
+| CPU | Ryzen 5 1600 | intel i7 4790 | Ryzen 7 5800X | Ryzen 7 9700X |
 | GPU | GTX 960 4 GB | RX 570 4 GB | RTX 3060 8 GB | RTX 3080 Ti 12 GB |
 | RAM | 12 GB | 12 GB | 12 GB | 12 GB |
 | Storage | SSD | SSD | SSD | SSD |
