@@ -1149,6 +1149,8 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
     }
     share_layouts = EmulatorSettings.IsDescLayoutShare();
     async_shader_recompiling = EmulatorSettings.IsAsyncShaderRecompiling();
+    sync_budget =
+        std::chrono::milliseconds{std::clamp(EmulatorSettings.GetPipelineSyncBudgetMs(), 0, 50000)};
     WarmUp();
 
     auto [cache_result, cache] = instance.GetDevice().createPipelineCacheUnique({});
@@ -1210,8 +1212,22 @@ void PipelineCache::QueueCompileTask(std::function<void()>&& task, bool front) {
     compile_cv.notify_one();
 }
 
+template <typename T>
+bool PipelineCache::WaitForQueuedCompile(const std::future<T>& compile) {
+    const auto now = std::chrono::steady_clock::now();
+    if (!compile_deadline_armed) {
+        compile_deadline_armed = true;
+        compile_deadline = now + sync_budget;
+    }
+    if (now < compile_deadline && pre_compile_hook_) {
+        pre_compile_hook_(pre_compile_user_);
+    }
+    return compile.wait_until(compile_deadline) == std::future_status::ready;
+}
+
 const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectParams params) {
     ++graphics_lookups;
+    compile_deadline_armed = false;
     // The indirect draw's SGPR offsets reach the vertex runtime info without
     // passing through a register, so the register stamp does not cover them.
     // Both offsets are u16 at the only producer (Rasterizer::DrawIndirect), so
@@ -1308,7 +1324,11 @@ const GraphicsPipeline* PipelineCache::CreateGraphicsPipeline() {
         }
     }
     if (async_shader_recompiling && !photo) {
-        QueueGraphicsPipeline(pipeline_hash, fetch_shader);
+        auto compile = QueueGraphicsPipeline(pipeline_hash, fetch_shader);
+        if (WaitForQueuedCompile(compile)) {
+            return InstallGraphicsPipeline(compile.get());
+        }
+        pending_graphics_pipelines.emplace(graphics_key, std::move(compile));
         return nullptr;
     }
 
@@ -1324,8 +1344,8 @@ const GraphicsPipeline* PipelineCache::CreateGraphicsPipeline() {
     return InstallGraphicsPipeline(std::move(pipeline));
 }
 
-void PipelineCache::QueueGraphicsPipeline(u64 hash,
-                                          const Shader::Gcn::FetchShaderData* fetch_shader) {
+std::future<std::unique_ptr<GraphicsPipeline>> PipelineCache::QueueGraphicsPipeline(
+    u64 hash, const Shader::Gcn::FetchShaderData* fetch_shader) {
     auto job = std::make_shared<GraphicsPipelineJob>();
     job->key = graphics_key;
     job->hash = hash;
@@ -1355,7 +1375,7 @@ void PipelineCache::QueueGraphicsPipeline(u64 hash,
             }
         }
     }
-    pending_graphics_pipelines.emplace(graphics_key, job->pipeline.get_future());
+    auto compile = job->pipeline.get_future();
     QueueCompileTask(
         [this, job] {
             try {
@@ -1374,7 +1394,9 @@ void PipelineCache::QueueGraphicsPipeline(u64 hash,
                 job->pipeline.set_exception(std::current_exception());
             }
         },
-        false);
+        // The draw waits for it within the budget, ahead of the compiles nothing waits for.
+        sync_budget.count() != 0);
+    return compile;
 }
 
 const GraphicsPipeline* PipelineCache::InstallGraphicsPipeline(
@@ -2011,12 +2033,13 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
 }
 
 // Translates the program as CompileModule does and hands its SPIR-V emission to a shader compile
-// worker. A null spec builds the program's first permutation.
-void PipelineCache::QueueProgramCompilation(Program& program, HwStage stage, SwStage l_stage,
-                                            const Shader::ShaderParams& params,
-                                            Shader::Backend::Bindings binding,
-                                            Shader::StageSpecialization* spec, size_t perm_idx,
-                                            u64 perm_hash) {
+// worker, which the draw waits for within its sync budget. Returns whether the permutation was
+// added to the program; otherwise it stays pending. A null spec builds the first permutation.
+bool PipelineCache::CompileProgramOnWorker(Program& program, HwStage stage, SwStage l_stage,
+                                           const Shader::ShaderParams& params,
+                                           Shader::Backend::Bindings& binding,
+                                           Shader::StageSpecialization* spec, size_t perm_idx,
+                                           u64 perm_hash) {
     auto result = std::make_shared<ShaderCompileResult>();
     std::ranges::copy(params.user_data, result->user_data.begin());
     auto& info = result->info;
@@ -2084,6 +2107,12 @@ void PipelineCache::QueueProgramCompilation(Program& program, HwStage stage, SwS
             }
         },
         true);
+    if (!WaitForQueuedCompile(result->completion)) {
+        return false;
+    }
+    binding = result->bindings;
+    PublishPendingCompilation(program);
+    return true;
 }
 
 void PipelineCache::EmitProgram(ShaderCompileResult& result) {
@@ -2166,9 +2195,17 @@ u64 PipelineCache::CreateProgramSlow(HwStage stage, SwStage l_stage,
     id.program = created_slot.get();
     id.program_hash = params.hash;
     if (async_shader_recompiling && stage != HwStage::Compute && !DrawsPhoto()) {
-        QueueProgramCompilation(*created_slot, stage, l_stage, params, binding, nullptr, 0,
-                                HashCombine(params.hash, 0));
-        return Publish(out_slot, l_stage, nullptr, {}, nullptr, 0u, 0);
+        const auto perm_hash = HashCombine(params.hash, 0);
+        if (!CompileProgramOnWorker(*created_slot, stage, l_stage, params, binding, nullptr, 0,
+                                    perm_hash)) {
+            return Publish(out_slot, l_stage, nullptr, {}, nullptr, 0u, 0);
+        }
+        // Points the info the compile published at the live user data registers.
+        auto& info = created_slot->info;
+        info.user_data = params.user_data;
+        info.RefreshFlatBuf();
+        return Publish(out_slot, l_stage, &info, created_slot->modules[0].module,
+                       created_slot.get(), 0u, perm_hash);
     }
     auto start = binding;
     auto ri_compile = runtime_info;
@@ -2584,16 +2621,19 @@ u64 PipelineCache::ResolvePermutationSlow(HwStage stage, SwStage l_stage,
         }
         if (async_shader_recompiling && stage != HwStage::Compute && !DrawsPhoto()) {
             RegisterShaderMeta(info, spec.fetch_shader_data, spec, perm_hash, perm_idx);
-            QueueProgramCompilation(*program, stage, l_stage, params, binding, &spec, perm_idx,
-                                    perm_hash);
-            return Publish(out_slot, l_stage, nullptr, {}, nullptr, 0u, 0);
-        }
-        auto new_info = Shader::Info(stage, l_stage, params);
-        auto ri_compile = runtime_info;
-        module = CompileModule(new_info, ri_compile, params.code, perm_idx, binding);
+            if (!CompileProgramOnWorker(*program, stage, l_stage, params, binding, &spec, perm_idx,
+                                        perm_hash)) {
+                return Publish(out_slot, l_stage, nullptr, {}, nullptr, 0u, 0);
+            }
+            module = program->modules[perm_idx].module;
+        } else {
+            auto new_info = Shader::Info(stage, l_stage, params);
+            auto ri_compile = runtime_info;
+            module = CompileModule(new_info, ri_compile, params.code, perm_idx, binding);
 
-        RegisterShaderMeta(info, spec.fetch_shader_data, spec, perm_hash, perm_idx);
-        program->AddPermut(module, std::move(spec));
+            RegisterShaderMeta(info, spec.fetch_shader_data, spec, perm_hash, perm_idx);
+            program->AddPermut(module, std::move(spec));
+        }
     } else {
         info.AddBindings(binding);
         module = program->modules[hit_idx].module;
