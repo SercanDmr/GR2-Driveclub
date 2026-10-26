@@ -46,7 +46,7 @@ https://www.youtube.com/watch?v=O8z6QPOaGDg&list=PLOgHncbXc__M&pp=sAgC
 - skip intro patches
 - SSAO - TAA ghosting fix patch
 - FSR 3.1 + FSR 4.1 support
-- XBOX and NINTENDO button prompts for GR2 and GRR
+- XBOX, NINTENDO and STEAM (Steam Deck, Steam Controller) button prompts for GR2 and GRR
 
 **Included General QOL features**
 - massive general performance improvements
