@@ -10,11 +10,7 @@
 namespace DriveclubPC {
 
 inline bool AudioBufferingEnabled() {
-    static const bool enabled = [] {
-        const auto* env = std::getenv("DCPC_AUDIO_BUFFERING");
-        return !env || env[0] != '0';
-    }();
-    return enabled;
+    return true;
 }
 
 constexpr u32 AudioStartupFrames(u32 sample_rate) {
