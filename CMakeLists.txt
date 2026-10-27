@@ -1388,6 +1388,8 @@ add_executable(shadps4
     src/emulator.h
     src/sdl_window.h
     src/sdl_window.cpp
+    src/driveclub/audio_queue.h
+    src/driveclub/audio_stats.h
 )
 
 create_target_directory_groups(shadps4)
