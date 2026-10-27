@@ -20,11 +20,7 @@ public:
     explicit AudioStats(const char* backend) : backend{backend} {}
 
     static bool Enabled() {
-        static const bool enabled = [] {
-            const auto* env = std::getenv("DCPC_AUDIO_STATS");
-            return env && env[0] == '1';
-        }();
-        return enabled;
+        return false;
     }
 
     void Record(const void* samples, u32 frames, u32 channels, u32 rate, bool is_float,
