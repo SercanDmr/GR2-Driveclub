@@ -195,6 +195,54 @@ void AppendMissing(std::vector<const char*>& list, std::span<const char* const> 
     }
 }
 
+// TEMPORARY DIAGNOSTIC: creates and destroys a device for each DLSS addition on its own, to find
+// the one the driver refuses.
+void TryDeviceVariants(vk::PhysicalDevice physical_device, vk::DeviceCreateInfo& create_info,
+                       vk::PhysicalDeviceVulkan12Features& vk12,
+                       std::span<const char* const> base_extensions,
+                       const vk::PhysicalDeviceVulkan12Features& base_vk12,
+                       std::span<const char* const> names) {
+    const vk::DeviceCreateInfo merged = create_info;
+    const vk::PhysicalDeviceVulkan12Features merged_vk12 = vk12;
+    const auto attempt = [&](std::string_view label, std::vector<const char*> extensions,
+                             const vk::PhysicalDeviceVulkan12Features& features) {
+        create_info.enabledExtensionCount = static_cast<u32>(extensions.size());
+        create_info.ppEnabledExtensionNames = extensions.data();
+        vk12 = features;
+        VkDevice device{};
+        const VkResult result = VULKAN_HPP_DEFAULT_DISPATCHER.vkCreateDevice(
+            static_cast<VkPhysicalDevice>(physical_device),
+            reinterpret_cast<const VkDeviceCreateInfo*>(&create_info), nullptr, &device);
+        LOG_INFO(Render_Vulkan, "GR2 DLSS diagnostic: device with {}: {}", label,
+                 vk::to_string(static_cast<vk::Result>(result)));
+        if (result == VK_SUCCESS) {
+            VULKAN_HPP_DEFAULT_DISPATCHER.vkDestroyDevice(device, nullptr);
+        }
+    };
+    const std::vector<const char*> base(base_extensions.begin(), base_extensions.end());
+    const std::vector<const char*> merged_extensions(merged.ppEnabledExtensionNames,
+                                                     merged.ppEnabledExtensionNames +
+                                                         merged.enabledExtensionCount);
+    attempt("no DLSS additions", base, base_vk12);
+    for (const char* name : names) {
+        if (std::ranges::any_of(
+                base, [name](const char* entry) { return std::strcmp(entry, name) == 0; })) {
+            continue;
+        }
+        std::vector<const char*> extensions = base;
+        extensions.push_back(name);
+        attempt(name, extensions, base_vk12);
+    }
+    vk::PhysicalDeviceVulkan12Features indexing = base_vk12;
+    indexing.descriptorIndexing = VK_TRUE;
+    attempt("descriptorIndexing", base, indexing);
+    attempt("every DLSS extension, no feature change", merged_extensions, base_vk12);
+    attempt("every DLSS addition", merged_extensions, merged_vk12);
+    create_info.enabledExtensionCount = merged.enabledExtensionCount;
+    create_info.ppEnabledExtensionNames = merged.ppEnabledExtensionNames;
+    vk12 = merged_vk12;
+}
+
 sl::AdapterInfo AdapterOf(vk::PhysicalDevice physical_device) {
     sl::AdapterInfo adapter{};
     // Without a LUID, slIsFeatureSupported skips the adapter check.
@@ -339,6 +387,11 @@ void ExtendDeviceForDlss(vk::PhysicalDevice physical_device, vk::DeviceCreateInf
         Disable(fmt::format("DLSS: {} lacks {}", device_name, lacking));
         return;
     }
+    // TEMPORARY DIAGNOSTIC
+    const std::vector<const char*> base_extensions(create_info.ppEnabledExtensionNames,
+                                                   create_info.ppEnabledExtensionNames +
+                                                       create_info.enabledExtensionCount);
+    const vk::PhysicalDeviceVulkan12Features base_vk12 = vk12;
     g_device_extensions.assign(create_info.ppEnabledExtensionNames,
                                create_info.ppEnabledExtensionNames +
                                    create_info.enabledExtensionCount);
@@ -374,6 +427,8 @@ void ExtendDeviceForDlss(vk::PhysicalDevice physical_device, vk::DeviceCreateInf
         fmt::join(std::span{g_requirements.vkFeatures12, g_requirements.vkNumFeatures12}, ", "),
         g_requirements.vkNumFeatures13, g_requirements.vkNumGraphicsQueuesRequired,
         g_requirements.vkNumComputeQueuesRequired);
+    // TEMPORARY DIAGNOSTIC
+    TryDeviceVariants(physical_device, create_info, vk12, base_extensions, base_vk12, names);
     g_stage.store(Stage::DeviceExtended, std::memory_order_release);
 }
 
