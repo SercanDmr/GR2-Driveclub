@@ -38,6 +38,7 @@
 #include "core/file_sys/fs.h"
 #include "core/libraries/kernel/kernel.h"
 #include "core/libraries/libs.h"
+#include "core/libraries/net/net_discovery.h"
 #include "core/libraries/np/np_handler/np_handler.h"
 #include "core/libraries/np/np_trophy.h"
 #include "core/libraries/save_data/save_backup.h"
@@ -47,6 +48,7 @@
 #include "core/user_settings.h"
 #include "emulator.h"
 #include "video_core/cache_storage.h"
+#include "video_core/gr2_fsr3/dlss_streamline.h"
 #include "video_core/renderdoc.h"
 
 #ifdef _WIN32
@@ -631,6 +633,9 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
     // Create stdin/stdout/stderr
     Common::Singleton<FileSys::HandleTable>::Instance()->CreateStdHandles();
 
+    // The guest address space takes the space below 1 TiB that CUDA needs.
+    Gr2Fsr3::StartCudaForDlss();
+
     // Initialize components
     memory = Core::Memory::Instance();
     controllers = Common::Singleton<Input::GameControllers>::Instance();
@@ -765,6 +770,10 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
         rpc->setStatusPlaying(game_info.title, id);
     }
 #endif
+
+    if (EmulatorSettings.IsConnectedToNetwork() && EmulatorSettings.IsDeviceDiscoveryEnabled()) {
+        Libraries::Net::DiscoveryResponder::Instance().Start();
+    }
 
     if (!id.empty()) {
         start_time = std::chrono::steady_clock::now();
