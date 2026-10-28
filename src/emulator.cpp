@@ -48,6 +48,10 @@
 #include "emulator.h"
 #include "video_core/cache_storage.h"
 #include "video_core/renderdoc.h"
+// TEMPORARY DIAGNOSTIC
+#if defined(ENABLE_GR2_FSR3) && defined(_WIN32)
+#include "video_core/gr2_fsr3/dlss_streamline.h"
+#endif
 
 #ifdef _WIN32
 #include <WinSock2.h>
@@ -630,6 +634,11 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
 
     // Create stdin/stdout/stderr
     Common::Singleton<FileSys::HandleTable>::Instance()->CreateStdHandles();
+
+    // TEMPORARY DIAGNOSTIC
+#if defined(ENABLE_GR2_FSR3) && defined(_WIN32)
+    Gr2Fsr3::DiagnoseCudaEarly();
+#endif
 
     // Initialize components
     memory = Core::Memory::Instance();
