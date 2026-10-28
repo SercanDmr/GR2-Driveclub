@@ -34,7 +34,7 @@ https://www.youtube.com/watch?v=O8z6QPOaGDg&list=PLOgHncbXc__M&pp=sAgC
 - Flagship performance, graphical accuracy, and stability
 - Feature complete fps patches (60fps, 40fps, 90fps, 120fps, 144fps)
 - Feature complete resolution patches (240p-8K)
-- Feature complete ultrawide patches (21:9,32:9,32:10,16:10...)
+- Feature complete ultrawide patches (21:9, 32:9, 32:10, 16:10...)
 - Feature complete online modes
 - Feature complete photo mode, photo export and ingame photo gallery
 - New performance patches and the ability to disable motion blur
@@ -43,9 +43,14 @@ https://www.youtube.com/watch?v=O8z6QPOaGDg&list=PLOgHncbXc__M&pp=sAgC
 - Elektricitie costume swap patch
 - The Other costume swap patch
 - Raven costume swap patch
+- Lisa costume swap patch
+- Cecie costume swap patch
+- Permet costume swap patch
+- Kali costume swap patch
+- Durga costume swap patch
 - skip intro patches
 - SSAO - TAA ghosting fix patch
-- FSR 3.1 + FSR 4.1 support
+- FSR 3.1 + FSR 4.1 support (Windows + Linux) + DLSS support (Windows Only)
 - XBOX, NINTENDO and STEAM (Steam Deck, Steam Controller) button prompts for GR2 and GRR
 
 **Included General QOL features**
