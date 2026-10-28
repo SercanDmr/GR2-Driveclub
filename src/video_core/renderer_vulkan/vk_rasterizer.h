@@ -539,6 +539,9 @@ private:
     u32 br_mrt_mask_{};
     u32 br_depth_bits_{};
     u32 br_color_bits_{};
+    // Whether the snapshot has no attachments, and the scissor corner that bounds its area.
+    bool br_no_attachment_{};
+    u32 br_scissor_corner_{};
     std::array<u8, AmdGpu::NUM_COLOR_BUFFERS> br_color_samples_{};
     bool draw_samples_target_{};
     // push_vp_memo census: probes, stamp hits and the summed high-water marks.
@@ -548,9 +551,10 @@ private:
     // The attachment views the memo left in place, for the mode-3 audit.
     std::array<VideoCore::ImageViewInfo, AmdGpu::NUM_COLOR_BUFFERS> rt_memo_cb_view_{};
     VideoCore::ImageViewInfo rt_memo_db_view_{};
-    // BRRT census: the three ctl-bits veto inputs, and misses whose fresh
+    // BRRT census: the ctl-bits and scissor veto inputs, and misses whose fresh
     // state equalled the snapshot they replaced (with the pass still open).
-    u64 br_veto_depth_{}, br_veto_color_{}, br_veto_fbl_{}, br_same_state_{}, br_same_open_{};
+    u64 br_veto_depth_{}, br_veto_color_{}, br_veto_fbl_{}, br_veto_scissor_{}, br_same_state_{},
+        br_same_open_{};
     // br_mem_fast_state latch and its census: moved-mem_gen probes
     // re-certified from the attachment words.
     bool br_mem_fast_state_{};
