@@ -46,7 +46,6 @@ private:
     AVCodecContextPtr m_codec_context{nullptr, &ReleaseAVCodecContext};
     SwsContextPtr m_sws_context{nullptr, &ReleaseSwsContext};
     std::queue<AVFramePtr> m_frame_queue;
-    OrbisVideodec2DecoderConfigInfo m_config_info{};
 };
 
 } // namespace Libraries::Videodec2

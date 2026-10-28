@@ -21,7 +21,6 @@
 #include "common/path_util.h"
 #include "core/emulator_settings.h"
 #include "sdl_window.h"
-#include "video_core/gr2_fsr3/dlss_streamline.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
 
 #ifdef __APPLE__
@@ -219,7 +218,6 @@ std::vector<const char*> GetInstanceExtensions(Frontend::WindowSystemType window
         return false;
     });
 
-    Gr2Fsr3::ExtendInstance(extensions);
     return extensions;
 }
 

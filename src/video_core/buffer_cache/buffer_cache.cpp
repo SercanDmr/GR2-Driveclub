@@ -116,7 +116,7 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
         .flags =
             vk::BufferCreateFlagBits::eSparseBinding | vk::BufferCreateFlagBits::eSparseResidency,
         .size = ARENA_PAGE_SIZE,
-        .usage = SupportedUsage(instance, ARENA_USAGE),
+        .usage = ARENA_USAGE,
         .sharingMode = vk::SharingMode::eExclusive,
     };
     const vk::DeviceBufferMemoryRequirements req_info = {
@@ -755,13 +755,12 @@ void BufferCache::EnsureResident(const Buffer* arena, u64 first_block, u64 last_
         return;
     }
 
-    const bool has_bda = instance.IsBufferDeviceAddressSupported();
     const vk::MemoryAllocateFlagsInfo alloc_flags = {
         .flags = vk::MemoryAllocateFlagBits::eDeviceAddress,
     };
     const bool host_type = arena_host_type_index && !arena_host_spent;
     vk::MemoryAllocateInfo alloc_info = {
-        .pNext = has_bda ? &alloc_flags : nullptr,
+        .pNext = &alloc_flags,
         .allocationSize = resident_blocks << block_shift,
         .memoryTypeIndex = host_type ? *arena_host_type_index : arena_device_type_index,
     };
@@ -820,9 +819,6 @@ void BufferCache::EnsureResident(const Buffer* arena, u64 first_block, u64 last_
         });
         memory_offset += bind.size;
 
-        if (!has_bda) {
-            continue;
-        }
         for (u32 block = 0; block < bind.size; block += block_size) {
             *(bda_addrs++) = arena->BufferDeviceAddress() + bind.resourceOffset + block;
         }
@@ -831,10 +827,8 @@ void BufferCache::EnsureResident(const Buffer* arena, u64 first_block, u64 last_
         offset += copy_size;
     }
 
-    if (has_bda) {
-        staging.Flush();
-        runtime.CopyBuffer(staging.buffer, bda_pagetable_buffer.get(), copies);
-    }
+    staging.Flush();
+    runtime.CopyBuffer(staging.buffer, bda_pagetable_buffer.get(), copies);
 }
 
 bool BufferCache::SynchronizeMemory(const Buffer* arena, VAddr device_addr, u32 size,
