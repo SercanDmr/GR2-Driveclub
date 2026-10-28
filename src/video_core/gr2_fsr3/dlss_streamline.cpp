@@ -234,63 +234,6 @@ sl::Resource ResourceOf(const Fsr4Image& image, vk::Format format, vk::Extent2D 
     return resource;
 }
 
-// TEMPORARY DIAGNOSTIC: the emulator turns Windows Error Reporting off, so a crash in device
-// creation leaves no record of the faulting module. Logs each exception raised meanwhile.
-PVOID g_diagnostic_handler{};
-std::atomic<int> g_diagnostic_count{};
-
-std::string ModuleOffset(DWORD64 address) {
-    HMODULE module{};
-    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                            reinterpret_cast<LPCWSTR>(address), &module)) {
-        return fmt::format("{:#x}", address);
-    }
-    std::array<wchar_t, MAX_PATH> name{};
-    GetModuleFileNameW(module, name.data(), static_cast<DWORD>(name.size()));
-    return fmt::format("{}+{:#x}", std::filesystem::path{name.data()}.filename().string(),
-                       address - reinterpret_cast<DWORD64>(module));
-}
-
-LONG CALLBACK DiagnoseException(EXCEPTION_POINTERS* pointers) {
-    const EXCEPTION_RECORD& record = *pointers->ExceptionRecord;
-    // Thread names and debug output also arrive as exceptions.
-    if (record.ExceptionCode == 0x406D1388 || record.ExceptionCode == DBG_PRINTEXCEPTION_C ||
-        record.ExceptionCode == DBG_PRINTEXCEPTION_WIDE_C ||
-        g_diagnostic_count.fetch_add(1, std::memory_order_relaxed) >= 64) {
-        return EXCEPTION_CONTINUE_SEARCH;
-    }
-    // The faulting module is logged before the stack walk, which can fault itself.
-    LOG_CRITICAL(Render_Vulkan,
-                 "GR2 DLSS diagnostic: exception {:#x} on thread {} at {} (information {:#x} "
-                 "{:#x})",
-                 record.ExceptionCode, GetCurrentThreadId(),
-                 ModuleOffset(reinterpret_cast<DWORD64>(record.ExceptionAddress)),
-                 record.NumberParameters > 0 ? record.ExceptionInformation[0] : 0,
-                 record.NumberParameters > 1 ? record.ExceptionInformation[1] : 0);
-    std::string frames;
-    CONTEXT context = *pointers->ContextRecord;
-    for (int depth = 0; depth < 24 && context.Rip != 0; ++depth) {
-        frames += ' ';
-        frames += ModuleOffset(context.Rip);
-        DWORD64 image_base{};
-        const PRUNTIME_FUNCTION function =
-            RtlLookupFunctionEntry(context.Rip, &image_base, nullptr);
-        if (function == nullptr) {
-            // A leaf function keeps its return address at the top of the stack.
-            context.Rip = *reinterpret_cast<const DWORD64*>(context.Rsp);
-            context.Rsp += sizeof(DWORD64);
-            continue;
-        }
-        PVOID handler_data{};
-        DWORD64 establisher_frame{};
-        RtlVirtualUnwind(UNW_FLAG_NHANDLER, image_base, context.Rip, function, &context,
-                         &handler_data, &establisher_frame, nullptr);
-    }
-    LOG_CRITICAL(Render_Vulkan, "GR2 DLSS diagnostic: frames:{}", frames);
-    return EXCEPTION_CONTINUE_SEARCH;
-}
-
 } // namespace
 
 void ExtendInstance(std::vector<const char*>& extensions) {
@@ -432,19 +375,10 @@ void ExtendDeviceForDlss(vk::PhysicalDevice physical_device, vk::DeviceCreateInf
         g_requirements.vkNumFeatures13, g_requirements.vkNumGraphicsQueuesRequired,
         g_requirements.vkNumComputeQueuesRequired);
     g_stage.store(Stage::DeviceExtended, std::memory_order_release);
-    // TEMPORARY DIAGNOSTIC
-    g_diagnostic_handler = AddVectoredExceptionHandler(1, DiagnoseException);
-    LOG_INFO(Render_Vulkan, "GR2 DLSS diagnostic: creating the device");
 }
 
 void OnDeviceCreated(vk::Instance instance, vk::PhysicalDevice physical_device, vk::Device device,
                      u32 queue_family_index) {
-    // TEMPORARY DIAGNOSTIC
-    if (g_diagnostic_handler != nullptr) {
-        RemoveVectoredExceptionHandler(g_diagnostic_handler);
-        g_diagnostic_handler = nullptr;
-        LOG_INFO(Render_Vulkan, "GR2 DLSS diagnostic: device created");
-    }
     if (g_stage.load(std::memory_order_acquire) != Stage::DeviceExtended) {
         return;
     }
