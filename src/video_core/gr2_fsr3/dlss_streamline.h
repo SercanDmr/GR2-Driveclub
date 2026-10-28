@@ -54,10 +54,6 @@ struct DlssEvaluateInfo {
  */
 void ExtendInstance(std::vector<const char*>& extensions);
 
-/// TEMPORARY DIAGNOSTIC: main thread, before the guest address space is reserved. With
-/// GR2_DLSS_EARLY_CUDA set, logs whether CUDA starts.
-void DiagnoseCudaEarly();
-
 /// Main thread, right before the device is created: appends the device extensions and enables
 /// the Vulkan 1.2 features DLSS needs when the physical device supports DLSS and all of them.
 void ExtendDeviceForDlss(vk::PhysicalDevice physical_device, vk::DeviceCreateInfo& create_info,
@@ -96,7 +92,6 @@ void DlssFree();
 #else
 
 inline void ExtendInstance(std::vector<const char*>&) {}
-inline void DiagnoseCudaEarly() {}
 inline void ExtendDeviceForDlss(vk::PhysicalDevice, vk::DeviceCreateInfo&,
                                 vk::PhysicalDeviceVulkan12Features&) {}
 inline void OnDeviceCreated(vk::Instance, vk::PhysicalDevice, vk::Device, u32) {}

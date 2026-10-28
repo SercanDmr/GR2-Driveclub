@@ -195,174 +195,6 @@ void AppendMissing(std::vector<const char*>& list, std::span<const char* const> 
     }
 }
 
-// TEMPORARY DIAGNOSTIC: creates and destroys devices with VK_NVX_binary_import, which the driver
-// refuses, to find what it conflicts with.
-void TryDevice(std::string_view label, vk::PhysicalDevice physical_device,
-               const vk::DeviceCreateInfo& create_info) {
-    VkDevice device{};
-    const VkResult result = VULKAN_HPP_DEFAULT_DISPATCHER.vkCreateDevice(
-        static_cast<VkPhysicalDevice>(physical_device),
-        reinterpret_cast<const VkDeviceCreateInfo*>(&create_info), nullptr, &device);
-    LOG_INFO(Render_Vulkan, "GR2 DLSS diagnostic: device with {}: {}", label,
-             vk::to_string(static_cast<vk::Result>(result)));
-    if (result == VK_SUCCESS) {
-        VULKAN_HPP_DEFAULT_DISPATCHER.vkDestroyDevice(device, nullptr);
-    }
-}
-
-void TryMinimalDevices(std::string_view when, vk::PhysicalDevice physical_device) {
-    const char* const binary_import = VK_NVX_BINARY_IMPORT_EXTENSION_NAME;
-    const float priority = 1.0f;
-    const vk::DeviceQueueCreateInfo queue{
-        .queueFamilyIndex = 0,
-        .queueCount = 1,
-        .pQueuePriorities = &priority,
-    };
-    vk::DeviceCreateInfo minimal{
-        .queueCreateInfoCount = 1,
-        .pQueueCreateInfos = &queue,
-    };
-    TryDevice(fmt::format("one queue, {}", when), physical_device, minimal);
-    minimal.enabledExtensionCount = 1;
-    minimal.ppEnabledExtensionNames = &binary_import;
-    TryDevice(fmt::format("one queue and VK_NVX_binary_import, {}", when), physical_device,
-              minimal);
-}
-
-void ProbeBinaryImport(vk::PhysicalDevice physical_device, vk::DeviceCreateInfo& create_info,
-                       std::span<const char* const> base_extensions) {
-    TryMinimalDevices("before the CUDA probe", physical_device);
-    const vk::DeviceCreateInfo saved = create_info;
-    std::vector<const char*> extensions(base_extensions.begin(), base_extensions.end());
-    extensions.push_back(VK_NVX_BINARY_IMPORT_EXTENSION_NAME);
-    create_info.enabledExtensionCount = static_cast<u32>(extensions.size());
-    create_info.ppEnabledExtensionNames = extensions.data();
-    create_info.pNext = nullptr;
-    create_info.pEnabledFeatures = nullptr;
-    TryDevice("the emulator extensions and VK_NVX_binary_import, no features", physical_device,
-              create_info);
-    create_info.pNext = saved.pNext;
-    create_info.pEnabledFeatures = saved.pEnabledFeatures;
-    auto* previous = reinterpret_cast<VkBaseOutStructure*>(&create_info);
-    for (VkBaseOutStructure* current = previous->pNext; current;
-         previous = current, current = current->pNext) {
-        previous->pNext = current->pNext;
-        TryDevice(fmt::format("VK_NVX_binary_import, without {}",
-                              vk::to_string(static_cast<vk::StructureType>(current->sType))),
-                  physical_device, create_info);
-        previous->pNext = current;
-    }
-    for (std::size_t i = 0; i < base_extensions.size(); ++i) {
-        std::vector<const char*> without(base_extensions.begin(), base_extensions.end());
-        without.erase(without.begin() + static_cast<std::ptrdiff_t>(i));
-        without.push_back(VK_NVX_BINARY_IMPORT_EXTENSION_NAME);
-        create_info.enabledExtensionCount = static_cast<u32>(without.size());
-        create_info.ppEnabledExtensionNames = without.data();
-        TryDevice(fmt::format("VK_NVX_binary_import, without {}", base_extensions[i]),
-                  physical_device, create_info);
-    }
-    create_info.enabledExtensionCount = saved.enabledExtensionCount;
-    create_info.ppEnabledExtensionNames = saved.ppEnabledExtensionNames;
-}
-
-// TEMPORARY DIAGNOSTIC: whether CUDA, which VK_NVX_binary_import runs on, starts in this process.
-void ProbeCuda(std::string_view when) {
-    using CuResult = int;
-    CuResult (*cu_init)(unsigned int){};
-    CuResult (*cu_get_error_name)(CuResult, const char**){};
-    CuResult (*cu_driver_get_version)(int*){};
-    CuResult (*cu_device_get_count)(int*){};
-    CuResult (*cu_device_get)(int*, int){};
-    CuResult (*cu_device_get_name)(char*, int, int){};
-    CuResult (*cu_primary_ctx_retain)(void**, int){};
-    CuResult (*cu_primary_ctx_release)(int){};
-
-    u64 free_total{};
-    u64 free_low{};
-    u64 largest{};
-    uintptr_t largest_base{};
-    MEMORY_BASIC_INFORMATION info{};
-    for (uintptr_t address = 0x10000;
-         VirtualQuery(reinterpret_cast<const void*>(address), &info, sizeof(info)) != 0;
-         address = reinterpret_cast<uintptr_t>(info.BaseAddress) + info.RegionSize) {
-        if (info.State != MEM_FREE) {
-            continue;
-        }
-        const auto base = reinterpret_cast<uintptr_t>(info.BaseAddress);
-        free_total += info.RegionSize;
-        if (base < 0x10000000000ULL) {
-            free_low += std::min<u64>(info.RegionSize, 0x10000000000ULL - base);
-        }
-        if (info.RegionSize > largest) {
-            largest = info.RegionSize;
-            largest_base = base;
-        }
-    }
-    LOG_INFO(Render_Vulkan,
-             "GR2 DLSS diagnostic: free address space {}: {:.1f} GiB, {:.1f} GiB below 1 TiB, "
-             "largest {:.1f} GiB at {:#x}",
-             when, static_cast<double>(free_total) / 0x40000000,
-             static_cast<double>(free_low) / 0x40000000, static_cast<double>(largest) / 0x40000000,
-             largest_base);
-
-    const HMODULE module = LoadLibraryW(L"nvcuda.dll");
-    if (!module) {
-        LOG_INFO(Render_Vulkan, "GR2 DLSS diagnostic: CUDA {}: nvcuda.dll does not load: {}", when,
-                 Common::GetLastErrorMsg());
-        return;
-    }
-    std::string missing;
-    const auto resolve = [&](const char* name, auto& function) {
-        function = reinterpret_cast<std::remove_reference_t<decltype(function)>>(
-            GetProcAddress(module, name));
-        if (!function && missing.empty()) {
-            missing = name;
-        }
-    };
-    resolve("cuInit", cu_init);
-    resolve("cuGetErrorName", cu_get_error_name);
-    resolve("cuDriverGetVersion", cu_driver_get_version);
-    resolve("cuDeviceGetCount", cu_device_get_count);
-    resolve("cuDeviceGet", cu_device_get);
-    resolve("cuDeviceGetName", cu_device_get_name);
-    resolve("cuDevicePrimaryCtxRetain", cu_primary_ctx_retain);
-    resolve("cuDevicePrimaryCtxRelease_v2", cu_primary_ctx_release);
-    if (!missing.empty()) {
-        LOG_INFO(Render_Vulkan, "GR2 DLSS diagnostic: CUDA {}: nvcuda.dll lacks {}", when, missing);
-        return;
-    }
-    const auto name = [&](CuResult result) {
-        const char* text = nullptr;
-        cu_get_error_name(result, &text);
-        return fmt::format("{} ({})", text ? text : "unknown", result);
-    };
-    int version{};
-    cu_driver_get_version(&version);
-    const CuResult init = cu_init(0);
-    LOG_INFO(Render_Vulkan, "GR2 DLSS diagnostic: CUDA {}: driver {}, cuInit {}", when, version,
-             name(init));
-    if (init != 0) {
-        return;
-    }
-    int count{};
-    const CuResult counted = cu_device_get_count(&count);
-    LOG_INFO(Render_Vulkan, "GR2 DLSS diagnostic: CUDA {}: {} devices, {}", when, count,
-             name(counted));
-    for (int ordinal = 0; ordinal < count; ++ordinal) {
-        int device{};
-        std::array<char, 256> device_name{};
-        cu_device_get(&device, ordinal);
-        cu_device_get_name(device_name.data(), static_cast<int>(device_name.size()), device);
-        void* context{};
-        const CuResult retained = cu_primary_ctx_retain(&context, device);
-        LOG_INFO(Render_Vulkan, "GR2 DLSS diagnostic: CUDA {}: device {} {}: context {}", when,
-                 ordinal, device_name.data(), name(retained));
-        if (retained == 0) {
-            cu_primary_ctx_release(device);
-        }
-    }
-}
-
 sl::AdapterInfo AdapterOf(vk::PhysicalDevice physical_device) {
     sl::AdapterInfo adapter{};
     // Without a LUID, slIsFeatureSupported skips the adapter check.
@@ -482,13 +314,6 @@ void ExtendInstance(std::vector<const char*>& extensions) {
     g_stage.store(Stage::Initialized, std::memory_order_release);
 }
 
-// TEMPORARY DIAGNOSTIC
-void DiagnoseCudaEarly() {
-    if (GetEnvironmentVariableW(L"GR2_DLSS_EARLY_CUDA", nullptr, 0) != 0) {
-        ProbeCuda("before the guest address space");
-    }
-}
-
 void ExtendDeviceForDlss(vk::PhysicalDevice physical_device, vk::DeviceCreateInfo& create_info,
                          vk::PhysicalDeviceVulkan12Features& vk12) {
     if (g_stage.load(std::memory_order_acquire) != Stage::Initialized) {
@@ -514,10 +339,6 @@ void ExtendDeviceForDlss(vk::PhysicalDevice physical_device, vk::DeviceCreateInf
         Disable(fmt::format("DLSS: {} lacks {}", device_name, lacking));
         return;
     }
-    // TEMPORARY DIAGNOSTIC
-    const std::vector<const char*> base_extensions(create_info.ppEnabledExtensionNames,
-                                                   create_info.ppEnabledExtensionNames +
-                                                       create_info.enabledExtensionCount);
     g_device_extensions.assign(create_info.ppEnabledExtensionNames,
                                create_info.ppEnabledExtensionNames +
                                    create_info.enabledExtensionCount);
@@ -553,10 +374,6 @@ void ExtendDeviceForDlss(vk::PhysicalDevice physical_device, vk::DeviceCreateInf
         fmt::join(std::span{g_requirements.vkFeatures12, g_requirements.vkNumFeatures12}, ", "),
         g_requirements.vkNumFeatures13, g_requirements.vkNumGraphicsQueuesRequired,
         g_requirements.vkNumComputeQueuesRequired);
-    // TEMPORARY DIAGNOSTIC
-    ProbeBinaryImport(physical_device, create_info, base_extensions);
-    ProbeCuda("at device creation");
-    TryMinimalDevices("after the CUDA probe", physical_device);
     g_stage.store(Stage::DeviceExtended, std::memory_order_release);
 }
 
