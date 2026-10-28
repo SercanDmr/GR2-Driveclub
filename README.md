@@ -54,6 +54,7 @@ https://www.youtube.com/watch?v=O8z6QPOaGDg&list=PLOgHncbXc__M&pp=sAgC
 - XBOX, NINTENDO and STEAM (Steam Deck, Steam Controller) button prompts for GR2 and GRR
 
 **Included General QOL features**
+- All GR2fork improvements are region agnostic
 - massive general performance improvements
 - massive performance improvements with precise (offloaded) readbacks
 - massive performance improvements with asynchronous readback linear images
