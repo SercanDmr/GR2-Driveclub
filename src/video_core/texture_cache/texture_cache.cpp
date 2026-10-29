@@ -442,7 +442,7 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested_info, Bindi
     const bool bpp_match = requested_info.num_bits == cache_image.info.num_bits;
 
     // If an image in the cache has less slices we need to expand it
-    bool recreate = cache_image.info.resources < requested_info.resources;
+    bool recreate = !cache_image.info.resources.Contains(requested_info.resources);
 
     switch (binding) {
     case BindingType::Texture:
@@ -561,7 +561,7 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
 
         // Size and resources are greater, expand the image.
         if (image_info.type == cache_image.info.type &&
-            image_info.resources > cache_image.info.resources) {
+            !cache_image.info.resources.Contains(image_info.resources)) {
             return {ExpandImage(image_info, cache_image_id), -1, -1};
         }
 
@@ -1114,7 +1114,7 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
             if (cands != 0) {
                 ++addr_filter_calls_;
                 addr_filter_cands_ += cands;
-                if (match && match_rec.resources >= info.resources) {
+                if (match && match_rec.resources.Contains(info.resources)) {
                     Image& image = slot_images[match];
                     DEBUG_ASSERT(image.info.guest_size == match_rec.guest_size &&
                                  image.info.pixel_format == match_rec.pixel_format &&
@@ -1166,7 +1166,7 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
     // evaluation on the slow route is safe. !image_id must stay the first
     // disjunct: the short circuit keeps a null id from indexing slot_images.
     if (!image_id || (exact_fmt && info.pixel_format != slot_images[image_id].info.pixel_format) ||
-        slot_images[image_id].info.resources < info.resources) [[unlikely]] {
+        !slot_images[image_id].info.resources.Contains(info.resources)) [[unlikely]] {
         image_id = FindImageSlow(desc, exact_fmt, image_id, image_ids, view_mip, view_slice);
     }
 
@@ -1213,7 +1213,7 @@ ImageId TextureCache::FindImageSlow(ImageDesc& desc, bool exact_fmt, ImageId ima
         if (exact_fmt && info.pixel_format != image_resolved.info.pixel_format) {
             // Cannot reuse this image as we need the exact requested format.
             image_id = {};
-        } else if (image_resolved.info.resources < info.resources) {
+        } else if (!image_resolved.info.resources.Contains(info.resources)) {
             // The image was clearly picked up wrong.
             FreeImage(image_id);
             image_id = {};
