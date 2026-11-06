@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <cstdlib>
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/texture_cache/sampler.h"
@@ -11,11 +12,21 @@ namespace VideoCore {
 Sampler::Sampler(const Vulkan::Instance& instance, const AmdGpu::Sampler& sampler,
                  const AmdGpu::BorderColorBuffer border_color_base, const bool is_depth) {
     using namespace Vulkan;
+    // driveclub-pc: Off preserves game samplers; override only linear, mipmapped colour sampling.
+    static const int override_af = [] {
+        const int value = 16;
+        return value == 2 || value == 4 || value == 8 || value == 16 ? value : 0;
+    }();
+    const bool force_af = override_af && !is_depth && !sampler.force_unnormalized &&
+                          sampler.MaxLod() > sampler.MinLod() &&
+                          LiverpoolToVK::Filter(sampler.xy_min_filter) == vk::Filter::eLinear &&
+                          LiverpoolToVK::Filter(sampler.xy_mag_filter) == vk::Filter::eLinear;
     const bool anisotropy_enable = instance.IsAnisotropicFilteringSupported() &&
-                                   (AmdGpu::IsAnisoFilter(sampler.xy_mag_filter) ||
+                                   (force_af || AmdGpu::IsAnisoFilter(sampler.xy_mag_filter) ||
                                     AmdGpu::IsAnisoFilter(sampler.xy_min_filter));
     const float max_anisotropy =
-        anisotropy_enable ? std::clamp(sampler.MaxAniso(), 1.0f, instance.MaxSamplerAnisotropy())
+        anisotropy_enable ? std::clamp(force_af ? float(override_af) : sampler.MaxAniso(), 1.0f,
+                                       instance.MaxSamplerAnisotropy())
                           : 1.0f;
     auto border_color = LiverpoolToVK::BorderColor(sampler.border_color_type);
     if (border_color == vk::BorderColor::eFloatCustomEXT &&
