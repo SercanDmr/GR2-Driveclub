@@ -1051,6 +1051,10 @@ ImageId TextureCache::FindImageMemoizedSlow(ImageDesc& desc, const AmdGpu::Image
             ++findimg_evictions_;
         }
         e.valid = false;
+        // A crop source binds through FindSubrectView's copy, which a consumed hit would skip.
+        if (desc.IsSubrectTexture(slot_images[real].info)) {
+            return real;
+        }
         e.tsharp_raw = std::bit_cast<std::array<u64, 4>>(tsharp);
         e.type = static_cast<u8>(desc.type);
         e.view_key = view_key;
@@ -1152,11 +1156,15 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
 
     ImageId image_id{};
 
+    ImageId subrect_source{};
     // Check for a perfect match first
     for (const auto& cache_id : image_ids) {
         auto& cache_image = slot_images[cache_id];
         if (cache_image.info.guest_address != info.guest_address) {
             continue;
+        }
+        if (desc.IsSubrectTexture(cache_image.info) && cache_image.HasGpuValidData()) {
+            subrect_source = cache_id;
         }
         if (cache_image.info.guest_size != info.guest_size) {
             continue;
@@ -1172,6 +1180,10 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
             continue;
         }
         image_id = cache_id;
+    }
+
+    if (!image_id) {
+        image_id = subrect_source;
     }
 
     int view_mip{-1};
@@ -1787,8 +1799,9 @@ void TextureCache::RecordBindNoop(ImageId image_id, const ImageDesc& desc,
     }
     // A no-op answered now repeats until the backing's epoch moves; the layout
     // stored with it is the one the descriptor reads.
-    const bool noop = image.BarriersNoop(dst_layout, vk::AccessFlagBits2::eShaderRead,
-                                         Image::kShaderReadStages, desc.view_info.range);
+    const bool noop =
+        image.BarriersNoop(*image.backing, dst_layout, vk::AccessFlagBits2::eShaderRead,
+                           Image::kShaderReadStages, desc.view_info.range);
     e.bind_epoch = noop ? image.backing->state_epoch : 0;
     e.bind_layout = image.backing->state.layout;
     ++bind_noop_records_;
