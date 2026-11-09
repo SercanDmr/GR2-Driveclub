@@ -15,7 +15,7 @@ https://www.youtube.com/watch?v=O8z6QPOaGDg&list=PLOgHncbXc__M&pp=sAgC
 
 **Join the GR2fork discord server** (new) here for extended support. Anyone who wants to lurk for general game discussion surrounding gravity rush 1 and 2 are also welcome -> https://discord.gg/hnHRpzxGzG
 
-**Support My Project Here** for Restored Online and New Features in the Future: https://ko-fi.com/junminlee2004
+**Support My Project Here** for New Features in the Future: https://ko-fi.com/junminlee2004
 
 -------
 <img width="256" height="256" alt="20261025_030106_001" src="https://github.com/user-attachments/assets/5f28141c-570b-4010-9cd6-4ddb573217d6" /><img width="256" height="256![Uploading 20260525_051655_001.jpg…]()
