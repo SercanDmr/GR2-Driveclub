@@ -1564,3 +1564,8 @@ endif()
 
 # Install rules
 install(TARGETS shadps4 BUNDLE DESTINATION .)
+
+else()
+##    enable_testing()
+##    add_subdirectory(tests)
+endif()
