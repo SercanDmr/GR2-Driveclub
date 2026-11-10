@@ -20,8 +20,6 @@
 #include "core/libraries/game_custom_data_dialog/game_custom_data_dialog.h"
 #include "core/libraries/game_live_streaming/gamelivestreaming.h"
 #include "core/libraries/gnmdriver/gnmdriver.h"
-#include "core/libraries/gr2_online/gr2_online.h"
-#include "core/libraries/gr2_photo/gr2_photo.h"
 #include "core/libraries/hmd/hmd.h"
 #include "core/libraries/hmd/hmd_setup_dialog.h"
 #include "core/libraries/hmd/vrservicedialog.h"
@@ -119,9 +117,6 @@ static void RegisterAudio3d(Core::Loader::SymbolsResolver* sym) {
 
 void InitHLELibs(Core::Loader::SymbolsResolver* sym) {
     LOG_INFO(Lib_Kernel, "Initializing HLE libraries");
-    // Stays first: the linker takes the first registration of a NID.
-    Gr2Photo::RegisterLib(sym);
-    Gr2Online::RegisterLib(sym);
 
     auto* game_info = Common::Singleton<Common::ElfInfo>::Instance();
     const auto& sys_module_path = EmulatorSettings.GetSysModulesDir();
